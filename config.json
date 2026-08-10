@@ -1,0 +1,11 @@
+{
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://chat.community.home.arpa",
+      "server_name": "chat.community.home.arpa"
+    }
+  },
+  "default_theme": "light",
+  "disable_custom_urls": true,
+  "disable_guests": true
+}

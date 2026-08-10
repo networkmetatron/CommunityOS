@@ -1,0 +1,29 @@
+# CommunityOS optional app: Nextcloud (Files)
+# Focused first version: files, sharing, accounts, WebDAV.
+services:
+  nextcloud:
+    image: nextcloud:30.0.4-apache
+    container_name: communityos-nextcloud
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mariadb
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${ADMIN_PASS}
+      NEXTCLOUD_TRUSTED_DOMAINS: files.community.home.arpa
+      OVERWRITEPROTOCOL: https
+      OVERWRITEHOST: files.community.home.arpa
+      OVERWRITECLIURL: https://files.community.home.arpa
+    volumes:
+      - ./data/nextcloud:/var/www/html
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/status.php >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s

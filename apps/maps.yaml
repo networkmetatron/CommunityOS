@@ -1,0 +1,29 @@
+# CommunityOS optional app: Martin (tiles) + MapLibre UI + download API
+services:
+  martin:
+    image: ghcr.io/maplibre/martin:v0.14.2
+    container_name: communityos-martin
+    restart: unless-stopped
+    volumes:
+      - ./data/maps:/data:ro
+    command: ["/data"]
+
+  maps-api:
+    image: python:3.12-alpine
+    container_name: communityos-maps-api
+    restart: unless-stopped
+    environment:
+      MAPS_DATA: /data
+      PMTILES_BIN: /usr/local/bin/pmtiles
+      # Override anytime in /opt/communityos/.env — no code change needed
+      PMTILES_SOURCE_URL: ${PMTILES_SOURCE_URL:-https://build.protomaps.com/20260807.pmtiles}
+      MARTIN_CONTAINER: communityos-martin
+    volumes:
+      - ./data/maps:/data
+      - ./bin/pmtiles:/usr/local/bin/pmtiles:ro
+      - ./scripts/maps-api.py:/app/maps-api.py:ro
+      - ./config/maps-source.env:/config/maps-source.env:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["python3", "/app/maps-api.py"]
+    depends_on:
+      - martin

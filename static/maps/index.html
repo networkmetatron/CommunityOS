@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>CommunityOS Maps</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #0f1419; color: #e7ecf3; }
+    #map { position: absolute; inset: 0; }
+    #panel {
+      position: absolute; z-index: 2; top: 12px; left: 12px; width: min(22rem, calc(100vw - 24px));
+      background: rgba(26, 35, 50, 0.96); border: 1px solid #2a3548; border-radius: 12px;
+      padding: 0.85rem 1rem 1rem; box-shadow: 0 8px 24px rgba(0,0,0,0.35); backdrop-filter: blur(8px);
+      max-height: calc(100vh - 24px); overflow: auto;
+    }
+    #panel h1 { margin: 0 0 0.5rem; font-size: 1.05rem; font-weight: 650; }
+    #panel p, label { margin: 0.35rem 0; color: #9aa8bc; font-size: 0.88rem; line-height: 1.4; }
+    #panel a { color: #93c5fd; }
+    .tabs { display: flex; gap: 0.35rem; margin-bottom: 0.65rem; }
+    .tabs button {
+      flex: 1; border: 1px solid #2a3548; background: #0f1419; color: #9aa8bc;
+      border-radius: 8px; padding: 0.4rem; font: inherit; cursor: pointer;
+    }
+    .tabs button.active { background: #243044; color: #e7ecf3; border-color: #3d4f6a; }
+    select, input, button.primary {
+      width: 100%; margin-top: 0.25rem; padding: 0.45rem 0.55rem; border-radius: 8px;
+      border: 1px solid #2a3548; background: #0f1419; color: #e7ecf3; font: inherit;
+    }
+    button.primary {
+      margin-top: 0.75rem; background: #2563eb; border-color: #2563eb; color: #fff;
+      font-weight: 600; cursor: pointer;
+    }
+    button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 0.85rem; color: #9aa8bc; }
+    #status.ok { color: #86efac; }
+    #status.err { color: #fca5a5; }
+    .bar { height: 8px; background: #0f1419; border-radius: 99px; overflow: hidden; margin-top: 0.5rem; }
+    .bar > span { display: block; height: 100%; width: 0; background: #3b82f6; transition: width 0.3s; }
+    .hint { font-size: 0.8rem; color: #7b8ba3; margin-top: 0.5rem; }
+    .empty {
+      position: absolute; inset: 0; display: grid; place-items: center; padding: 1.5rem; z-index: 1;
+    }
+    .card {
+      max-width: 32rem; width: 100%; background: #1a2332; border: 1px solid #2a3548;
+      border-radius: 1rem; padding: 1.6rem 1.7rem; line-height: 1.5;
+    }
+    .card h1 { margin: 0 0 0.4rem; font-size: 1.35rem; }
+    .card p { margin: 0.55rem 0; color: #9aa8bc; }
+    .card code {
+      display: block; margin: 0.75rem 0; padding: 0.75rem 0.9rem;
+      background: #0f1419; border-radius: 0.5rem; color: #93c5fd; font-size: 0.88rem; overflow-x: auto;
+    }
+    .hidden { display: none !important; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  </style>
+</head>
+<body>
+  <div id="empty" class="empty hidden">
+    <div class="card">
+      <h1>CommunityOS Maps</h1>
+      <p id="empty-msg">No map tiles found yet.</p>
+      <p>Download a region from the <strong>Download</strong> tab, or add files on the server:</p>
+      <code>/opt/communityos/data/maps/</code>
+      <p>Then: <code style="display:inline;padding:0.15em 0.4em">sudo communityos app restart maps</code></p>
+      <p style="margin-top:1rem"><a href="https://community.home.arpa">Back to CommunityOS</a></p>
+    </div>
+  </div>
+
+  <div id="panel">
+    <h1>CommunityOS Maps</h1>
+    <div class="tabs">
+      <button type="button" id="tab-view" class="active">Map</button>
+      <button type="button" id="tab-dl">Download</button>
+    </div>
+
+    <div id="view-pane">
+      <p id="status">Loading…</p>
+      <label for="source">Map source</label>
+      <select id="source" aria-label="Map source"></select>
+      <p class="hint"><a href="https://community.home.arpa">CommunityOS</a></p>
+    </div>
+
+    <div id="dl-pane" class="hidden">
+      <p class="hint">Initial download needs Internet. Tiles are served offline afterward. No world dataset is downloaded unless you choose a huge region.</p>
+      <label for="preset">Region preset</label>
+      <select id="preset"></select>
+      <label for="dsname">Dataset name</label>
+      <input id="dsname" placeholder="los-angeles" />
+      <div class="row">
+        <div>
+          <label for="maxzoom">Max zoom</label>
+          <input id="maxzoom" type="number" min="0" max="18" value="14" />
+        </div>
+        <div>
+          <label>Est. size</label>
+          <input id="est" readonly value="—" />
+        </div>
+      </div>
+      <label for="bbox">Bounding box (minLon,minLat,maxLon,maxLat)</label>
+      <input id="bbox" placeholder="-118.95,33.55,-117.55,34.85" />
+      <button type="button" class="primary" id="btn-dl">Download</button>
+      <div class="bar" id="progwrap"><span id="prog"></span></div>
+      <p id="dlstatus" class="hint"></p>
+      <p class="hint">CLI alternative:<br><code style="display:block;margin-top:0.35rem;padding:0.5rem;background:#0f1419;border-radius:8px;color:#93c5fd">sudo communityos maps download --preset los-angeles</code></p>
+    </div>
+  </div>
+  <div id="map" class="hidden"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script>
+(function () {
+  const API = "/maps-api";
+  const emptyEl = document.getElementById("empty");
+  const emptyMsg = document.getElementById("empty-msg");
+  const panel = document.getElementById("panel");
+  const status = document.getElementById("status");
+  const sourceSel = document.getElementById("source");
+  const mapEl = document.getElementById("map");
+  const viewPane = document.getElementById("view-pane");
+  const dlPane = document.getElementById("dl-pane");
+  const tabView = document.getElementById("tab-view");
+  const tabDl = document.getElementById("tab-dl");
+  const presetSel = document.getElementById("preset");
+  const dsname = document.getElementById("dsname");
+  const maxzoom = document.getElementById("maxzoom");
+  const bbox = document.getElementById("bbox");
+  const est = document.getElementById("est");
+  const btnDl = document.getElementById("btn-dl");
+  const prog = document.getElementById("prog");
+  const dlstatus = document.getElementById("dlstatus");
+
+  let map = null;
+  let presets = [];
+
+  tabView.onclick = function () {
+    tabView.classList.add("active"); tabDl.classList.remove("active");
+    viewPane.classList.remove("hidden"); dlPane.classList.add("hidden");
+  };
+  tabDl.onclick = function () {
+    tabDl.classList.add("active"); tabView.classList.remove("active");
+    dlPane.classList.remove("hidden"); viewPane.classList.add("hidden");
+  };
+
+  function showEmpty(msg) {
+    emptyMsg.textContent = msg || "No map tiles found yet.";
+    emptyEl.classList.remove("hidden");
+    mapEl.classList.add("hidden");
+  }
+  function showMapUi() {
+    emptyEl.classList.add("hidden");
+    mapEl.classList.remove("hidden");
+  }
+
+  function tilesUrl(sourceId) {
+    return window.location.origin + "/tiles/" + encodeURIComponent(sourceId) + "/{z}/{x}/{y}";
+  }
+
+  function buildStyle(sourceId) {
+    return {
+      version: 8,
+      name: "CommunityOS Maps",
+      sources: { map: { type: "vector", tiles: [tilesUrl(sourceId)], maxzoom: 15 } },
+      layers: [
+        { id: "background", type: "background", paint: { "background-color": "#0b1220" } },
+        { id: "earth", type: "fill", source: "map", "source-layer": "earth", paint: { "fill-color": "#152033" } },
+        { id: "base", type: "fill", source: "map", "source-layer": "base", paint: { "fill-color": "#152033" } },
+        { id: "landcover", type: "fill", source: "map", "source-layer": "landcover", paint: { "fill-color": "#1a2a1f", "fill-opacity": 0.55 } },
+        { id: "landuse", type: "fill", source: "map", "source-layer": "landuse", paint: { "fill-color": "#243044", "fill-opacity": 0.45 } },
+        { id: "water", type: "fill", source: "map", "source-layer": "water", paint: { "fill-color": "#1a3a5c" } },
+        { id: "buildings", type: "fill", source: "map", "source-layer": "buildings", paint: { "fill-color": "#2c3648", "fill-opacity": 0.85 } },
+        { id: "building", type: "fill", source: "map", "source-layer": "building", paint: { "fill-color": "#2c3648", "fill-opacity": 0.85 } },
+        { id: "roads", type: "line", source: "map", "source-layer": "roads",
+          paint: { "line-color": "#5b6b82", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.4, 12, 1.2, 15, 2.4] } },
+        { id: "transportation", type: "line", source: "map", "source-layer": "transportation",
+          paint: { "line-color": "#5b6b82", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.4, 12, 1.2, 15, 2.4] } },
+        { id: "physical_line", type: "line", source: "map", "source-layer": "physical_line", paint: { "line-color": "#2a5a8a", "line-width": 1 } },
+        { id: "boundaries", type: "line", source: "map", "source-layer": "boundaries", paint: { "line-color": "#6b7c94", "line-width": 0.8, "line-dasharray": [2, 2] } }
+      ]
+    };
+  }
+
+  // Known extract presets — [minLon, minLat, maxLon, maxLat]
+  // Used preferentially so Martin catalog extents cannot frame the wrong region.
+  const PRESET_BOUNDS = {
+    "los-angeles": [-118.95, 33.55, -117.55, 34.85],
+    "new-york": [-74.3, 40.45, -73.65, 41.0],
+    "nyc": [-74.3, 40.45, -73.65, 41.0],
+    "california": [-124.5, 32.5, -114.1, 42.1],
+    "united-states": [-125.0, 24.0, -66.5, 49.5],
+    "usa": [-125.0, 24.0, -66.5, 49.5]
+  };
+  const PRESET_ZOOM = {
+    "los-angeles": 9,
+    "new-york": 10,
+    "nyc": 10,
+    "california": 5,
+    "united-states": 3,
+    "usa": 3
+  };
+
+  function normalizeSourceId(id) {
+    return String(id || "")
+      .toLowerCase()
+      .replace(/\.pmtiles$/i, "")
+      .replace(/\.mbtiles$/i, "")
+      .replace(/_/g, "-")
+      .replace(/\s+/g, "-")
+      .trim();
+  }
+
+  function parseBounds(raw) {
+    if (!raw) return null;
+    if (Array.isArray(raw) && raw.length >= 4) {
+      var n = raw.slice(0, 4).map(Number);
+      if (n.every(function (x) { return isFinite(x); })) return n;
+    }
+    if (typeof raw === "string") {
+      var parts = raw.split(/[,\s]+/).map(Number).filter(function (x) { return isFinite(x); });
+      if (parts.length >= 4) return parts.slice(0, 4);
+    }
+    if (typeof raw === "object") {
+      var candidates = [
+        [raw.minLon, raw.minLat, raw.maxLon, raw.maxLat],
+        [raw.minx, raw.miny, raw.maxx, raw.maxy],
+        [raw.left, raw.bottom, raw.right, raw.top],
+        [raw.west, raw.south, raw.east, raw.north]
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        var cand = candidates[i];
+        if (cand.every(function (x) { return x !== undefined && x !== null && isFinite(Number(x)); })) {
+          return cand.map(Number);
+        }
+      }
+    }
+    return null;
+  }
+
+  function boundsForSource(sourceId, entry) {
+    var key = normalizeSourceId(sourceId);
+
+    // 1) Exact / fuzzy preset match ALWAYS wins over catalog
+    if (PRESET_BOUNDS[key]) return { bounds: PRESET_BOUNDS[key].slice(), zoom: PRESET_ZOOM[key] || 9, via: "preset:" + key };
+    var keys = Object.keys(PRESET_BOUNDS);
+    for (var j = 0; j < keys.length; j++) {
+      var k = keys[j];
+      if (key === k || key.indexOf(k) >= 0 || k.indexOf(key) >= 0) {
+        return { bounds: PRESET_BOUNDS[k].slice(), zoom: PRESET_ZOOM[k] || 9, via: "preset:" + k };
+      }
+    }
+    // Heuristic aliases
+    if (key.indexOf("york") >= 0) {
+      return { bounds: PRESET_BOUNDS["new-york"].slice(), zoom: 10, via: "preset:new-york(alias)" };
+    }
+    if (key.indexOf("angeles") >= 0 || key === "la") {
+      return { bounds: PRESET_BOUNDS["los-angeles"].slice(), zoom: 9, via: "preset:los-angeles(alias)" };
+    }
+
+    // 2) Catalog bounds only for unknown sources; reject world-scale
+    if (entry) {
+      var fromEntry = parseBounds(entry.bounds)
+        || parseBounds(entry.bounding_box)
+        || parseBounds(entry.bbox);
+      if (fromEntry) {
+        var spanLon = Math.abs(fromEntry[2] - fromEntry[0]);
+        var spanLat = Math.abs(fromEntry[3] - fromEntry[1]);
+        if (spanLon > 0.01 && spanLat > 0.01 && spanLon < 80 && spanLat < 60) {
+          return { bounds: fromEntry, zoom: 9, via: "catalog" };
+        }
+      }
+    }
+    return null;
+  }
+
+  function fitToSource(sourceId, entry) {
+    if (!map) return;
+    try { map.resize(); } catch (e0) {}
+
+    var info = boundsForSource(sourceId, entry);
+    if (!info || !info.bounds) {
+      // Do not silently dump unknown sources into the Atlantic if id looks regional
+      status.textContent = "Source: " + sourceId + " (no bounds; zoom manually)";
+      return;
+    }
+    var b = info.bounds;
+    var z = info.zoom || 9;
+    var center = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+
+    // jumpTo is reliable across setStyle; fitBounds can be reset or no-op mid-style-load
+    try {
+      map.jumpTo({ center: center, zoom: z });
+    } catch (e1) {}
+    try {
+      map.fitBounds([[b[0], b[1]], [b[2], b[3]]], {
+        padding: 48,
+        maxZoom: z + 1,
+        duration: 0
+      });
+    } catch (e2) {}
+
+    status.textContent = "Source: " + sourceId + " · " + info.via;
+    status.className = "ok";
+  }
+
+  function loadSource(sourceId, catalog) {
+    if (typeof maplibregl === "undefined") return;
+    var entry = catalog ? catalog[sourceId] : null;
+    const style = buildStyle(sourceId);
+
+    function applyCamera() {
+      fitToSource(sourceId, entry);
+    }
+
+    if (!map) {
+      map = new maplibregl.Map({
+        container: "map",
+        style: style,
+        center: [-98, 39],
+        zoom: 3,
+        attributionControl: true
+      });
+      map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
+      map.on("error", function (e) {
+        const msg = String((e && e.error && (e.error.message || e.error)) || "");
+        if (/source.*layer|does not exist|not found/i.test(msg)) return;
+      });
+      map.once("load", applyCamera);
+      map.once("style.load", applyCamera);
+      setTimeout(applyCamera, 100);
+      setTimeout(applyCamera, 500);
+    } else {
+      map.setStyle(style);
+      // Camera must be applied after style.load — setStyle can reset the view
+      map.once("style.load", applyCamera);
+      map.once("idle", applyCamera);
+      setTimeout(applyCamera, 100);
+      setTimeout(applyCamera, 500);
+      setTimeout(applyCamera, 1200);
+    }
+  }
+
+  function applyCatalog(catalog) {
+    const tiles = (catalog && catalog.tiles && typeof catalog.tiles === "object") ? catalog.tiles : (catalog || {});
+    const ids = Object.keys(tiles).filter(function (k) { return k && k !== "sprites" && k !== "fonts" && k !== "tiles"; });
+    catalog = tiles;
+    if (!ids.length) {
+      showEmpty("No map tiles found yet — use the Download tab or add files under /opt/communityos/data/maps/");
+      status.textContent = "No sources yet";
+      status.className = "";
+      sourceSel.innerHTML = "";
+      return;
+    }
+    if (typeof maplibregl === "undefined") {
+      showEmpty("MapLibre failed to load (network needed once for the library). Tiles are still local via Martin.");
+      return;
+    }
+    showMapUi();
+    sourceSel.innerHTML = "";
+    ids.forEach(function (id) {
+      const opt = document.createElement("option");
+      opt.value = id; opt.textContent = id;
+      sourceSel.appendChild(opt);
+    });
+    sourceSel.onchange = function () { loadSource(sourceSel.value, catalog); };
+    loadSource(ids[0], catalog);
+  }
+
+  function refreshCatalog() {
+    return fetch("/tiles/catalog")
+      .then(function (r) { if (!r.ok) throw new Error("catalog"); return r.json(); })
+      .then(applyCatalog)
+      .catch(function () {
+        showEmpty("Tile server not reachable yet. If you just installed Maps, wait a few seconds and reload.");
+      });
+  }
+
+  function parseBbox(s) {
+    const parts = String(s || "").split(",").map(function (x) { return parseFloat(x.trim()); });
+    if (parts.length !== 4 || parts.some(function (n) { return !isFinite(n); })) return null;
+    return parts;
+  }
+
+  function estimateLocal(bb, z) {
+    if (!bb) return "—";
+    const area = Math.max(0.01, Math.abs(bb[2] - bb[0]) * Math.abs(bb[3] - bb[1]));
+    const mb = Math.max(1, area * 0.35 * Math.pow(2, Math.max(0, z - 8)));
+    return "~" + mb.toFixed(0) + " MB (estimate)";
+  }
+
+  function syncEstimate() {
+    const bb = parseBbox(bbox.value);
+    const z = parseInt(maxzoom.value || "14", 10);
+    est.value = estimateLocal(bb, z);
+  }
+
+  function loadPresets() {
+    fetch(API + "/presets")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        presets = (data && data.presets) || [
+          { id: "los-angeles", name: "Los Angeles", bbox: [-118.95, 33.55, -117.55, 34.85], maxzoom: 14, estimated_mb: 88 },
+          { id: "california", name: "California", bbox: [-124.5, 32.5, -114.1, 42.1], maxzoom: 12, estimated_mb: 200 },
+          { id: "united-states", name: "United States (lower 48)", bbox: [-125.0, 24.0, -66.5, 49.5], maxzoom: 10, estimated_mb: 400 },
+          { id: "new-york", name: "New York City", bbox: [-74.3, 40.45, -73.65, 41.0], maxzoom: 14, estimated_mb: 60 }
+        ];
+        presetSel.innerHTML = "";
+        presets.forEach(function (p) {
+          const opt = document.createElement("option");
+          opt.value = p.id;
+          opt.textContent = p.name + (p.estimated_mb ? " (~" + p.estimated_mb + " MB)" : "");
+          presetSel.appendChild(opt);
+        });
+        applyPreset();
+      })
+      .catch(function () {
+        presets = [{ id: "los-angeles", name: "Los Angeles", bbox: [-118.95, 33.55, -117.55, 34.85], maxzoom: 14 }];
+        presetSel.innerHTML = '<option value="los-angeles">Los Angeles</option>';
+        applyPreset();
+      });
+  }
+
+  function applyPreset() {
+    const p = presets.find(function (x) { return x.id === presetSel.value; }) || presets[0];
+    if (!p) return;
+    dsname.value = p.id;
+    maxzoom.value = p.maxzoom || 14;
+    bbox.value = (p.bbox || []).join(",");
+    syncEstimate();
+  }
+  presetSel.onchange = applyPreset;
+  maxzoom.oninput = syncEstimate;
+  bbox.oninput = syncEstimate;
+
+  function pollJob(id) {
+    return fetch(API + "/jobs/" + id)
+      .then(function (r) { return r.json(); })
+      .then(function (job) {
+        prog.style.width = (job.progress || 0) + "%";
+        dlstatus.textContent = job.message || job.status;
+        if (job.status === "done") {
+          btnDl.disabled = false;
+          dlstatus.textContent = "Ready: " + (job.file || job.name) + ". Refreshing map…";
+          setTimeout(refreshCatalog, 2500);
+          return;
+        }
+        if (job.status === "error") {
+          btnDl.disabled = false;
+          dlstatus.textContent = "Error: " + (job.message || "download failed");
+          return;
+        }
+        setTimeout(function () { pollJob(id); }, 1500);
+      })
+      .catch(function () {
+        btnDl.disabled = false;
+        dlstatus.textContent = "Lost contact with download service.";
+      });
+  }
+
+  btnDl.onclick = function () {
+    const bb = parseBbox(bbox.value);
+    const name = (dsname.value || "").trim();
+    const z = parseInt(maxzoom.value || "14", 10);
+    if (!name || !bb) {
+      dlstatus.textContent = "Name and valid bbox are required.";
+      return;
+    }
+    btnDl.disabled = true;
+    prog.style.width = "5%";
+    dlstatus.textContent = "Starting download (internet required)…";
+    fetch(API + "/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, bbox: bb, maxzoom: z })
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          btnDl.disabled = false;
+          dlstatus.textContent = (res.j && res.j.error) ? res.j.error : "Download rejected";
+          if (res.j && res.j.estimated_mb) dlstatus.textContent += " (est. " + res.j.estimated_mb + " MB)";
+          return;
+        }
+        pollJob(res.j.job_id);
+      })
+      .catch(function () {
+        btnDl.disabled = false;
+        dlstatus.textContent = "Maps download API not reachable. Use CLI: sudo communityos maps download --preset " + (presetSel.value || "los-angeles");
+      });
+  };
+
+  loadPresets();
+  refreshCatalog();
+})();
+  </script>
+</body>
+</html>

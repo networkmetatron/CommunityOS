@@ -1,0 +1,47 @@
+# CommunityOS optional app: PeerTube (Streaming)
+# Uses shared Postgres + dedicated Redis. Caddy terminates TLS.
+# Note: video transcoding benefits from extra CPU, RAM, and disk.
+services:
+  peertube-redis:
+    image: redis:7.4.2-alpine
+    container_name: communityos-peertube-redis
+    restart: unless-stopped
+    volumes:
+      - ./data/peertube/redis:/data
+
+  peertube:
+    image: chocobozzz/peertube:v8.2.3
+    container_name: communityos-peertube
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      peertube-redis:
+        condition: service_started
+    environment:
+      PEERTUBE_DB_USERNAME: peertube
+      PEERTUBE_DB_PASSWORD: ${PEERTUBE_DB_PASSWORD}
+      PEERTUBE_DB_HOSTNAME: postgres
+      PEERTUBE_DB_PORT: "5432"
+      PEERTUBE_DB_NAME: peertube
+      PEERTUBE_DB_SSL: "false"
+      PEERTUBE_REDIS_HOSTNAME: peertube-redis
+      PEERTUBE_REDIS_PORT: "6379"
+      PEERTUBE_WEBSERVER_HOSTNAME: stream.community.home.arpa
+      PEERTUBE_WEBSERVER_PORT: "443"
+      PEERTUBE_WEBSERVER_HTTPS: "true"
+      PEERTUBE_SECRET: ${PEERTUBE_SECRET}
+      PEERTUBE_ADMIN_EMAIL: ${ADMIN_EMAIL}
+      PEERTUBE_TRUST_PROXY: '["127.0.0.1", "loopback", "172.16.0.0/12", "10.0.0.0/8", "192.168.0.0/16"]'
+      # Email optional on LAN; leave SMTP unset for local-first use
+      PEERTUBE_SMTP_HOSTNAME: ""
+      PEERTUBE_SMTP_PORT: "25"
+      PEERTUBE_SMTP_FROM: noreply@stream.community.home.arpa
+      PEERTUBE_SMTP_TLS: "false"
+      PEERTUBE_SMTP_DISABLE_STARTTLS: "true"
+    volumes:
+      - ./data/peertube/data:/data
+      - ./data/peertube/config:/config
+    # Live streaming (RTMP) optional; exposed on host for producers on the LAN
+    ports:
+      - "1935:1935"

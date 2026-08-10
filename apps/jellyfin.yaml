@@ -1,0 +1,55 @@
+# CommunityOS optional app: Jellyfin (media)
+# Admin is created by jellyfin-init using CommunityOS ADMIN_USER / ADMIN_PASS.
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:10.10.3
+    container_name: communityos-jellyfin
+    restart: unless-stopped
+    environment:
+      JELLYFIN_PublishedServerUrl: https://media.community.home.arpa
+    volumes:
+      - jellyfin_config:/config
+      - jellyfin_cache:/cache
+      - ./data/jellyfin/media:/media
+
+  jellyfin-init:
+    image: curlimages/curl:8.11.1
+    container_name: communityos-jellyfin-init
+    restart: "no"
+    depends_on:
+      - jellyfin
+    environment:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS: ${ADMIN_PASS}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Waiting for Jellyfin..."
+        for i in $(seq 1 90); do
+          if curl -fsS http://jellyfin:8096/System/Info/Public >/dev/null 2>&1; then
+            break
+          fi
+          sleep 2
+        done
+        # If startup wizard already finished, exit quietly
+        if curl -fsS http://jellyfin:8096/Startup/Configuration >/dev/null 2>&1; then
+          echo "Completing Jellyfin first-run as ${ADMIN_USER}..."
+          curl -fsS -X POST http://jellyfin:8096/Startup/User \
+            -H "Content-Type: application/json" \
+            -d "{\"Name\":\"${ADMIN_USER}\",\"Password\":\"${ADMIN_PASS}\"}" || true
+          curl -fsS -X POST http://jellyfin:8096/Startup/Configuration \
+            -H "Content-Type: application/json" \
+            -d '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}' || true
+          curl -fsS -X POST http://jellyfin:8096/Startup/RemoteAccess \
+            -H "Content-Type: application/json" \
+            -d '{"EnableRemoteAccess":true,"EnableAutomaticPortMapping":false}' || true
+          curl -fsS -X POST http://jellyfin:8096/Startup/Complete || true
+          echo "Jellyfin admin ready."
+        else
+          echo "Jellyfin already configured (or API not in startup mode)."
+        fi
+
+volumes:
+  jellyfin_config:
+  jellyfin_cache:

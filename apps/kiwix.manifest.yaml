@@ -1,0 +1,14 @@
+id: kiwix
+name: Library
+description: Offline knowledge library (Wikipedia, WikiMed, Gutenberg, …)
+url: https://library.community.home.arpa
+domain: library.community.home.arpa
+compose: apps/kiwix.yaml
+container: communityos-kiwix
+data: /opt/communityos/data/kiwix
+requires:
+  - caddy
+# Offline redistribution of upstream Docker images (package-offline.sh).
+# false/absent = admin must supply images for air-gapped optional-app install.
+# true = only when redistribution is verified/approved for CommunityOS bundles.
+redistribute_offline: false

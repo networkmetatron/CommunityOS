@@ -1,0 +1,14 @@
+id: jellyfin
+name: Media
+description: Local media server for video, music, and community recordings
+url: https://media.community.home.arpa
+domain: media.community.home.arpa
+compose: apps/jellyfin.yaml
+container: communityos-jellyfin
+data: /opt/communityos/data/jellyfin
+requires:
+  - caddy
+# Offline redistribution of upstream Docker images (package-offline.sh).
+# false/absent = admin must supply images for air-gapped optional-app install.
+# true = only when redistribution is verified/approved for CommunityOS bundles.
+redistribute_offline: false

@@ -1,0 +1,14 @@
+id: maps
+name: Maps
+description: Offline maps (Martin tiles + MapLibre)
+url: https://maps.community.home.arpa
+domain: maps.community.home.arpa
+compose: apps/maps.yaml
+container: communityos-martin
+data: /opt/communityos/data/maps
+requires:
+  - caddy
+# Offline redistribution of upstream Docker images (package-offline.sh).
+# false/absent = admin must supply images for air-gapped optional-app install.
+# true = only when redistribution is verified/approved for CommunityOS bundles.
+redistribute_offline: false

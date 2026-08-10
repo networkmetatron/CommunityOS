@@ -1,0 +1,11 @@
+# CommunityOS optional app: Kiwix (offline library)
+services:
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:3.7.0
+    container_name: communityos-kiwix
+    restart: unless-stopped
+    working_dir: /data
+    # Globs all ZIM files; add packages under data/kiwix/
+    command: ["*.zim"]
+    volumes:
+      - ./data/kiwix:/data:ro

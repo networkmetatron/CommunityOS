@@ -1,0 +1,82 @@
+{
+  "kiwix": {
+    "id": "kiwix",
+    "name": "Library",
+    "description": "Offline knowledge library (Wikipedia, WikiMed, Gutenberg, \u2026)",
+    "url": "https://library.community.home.arpa",
+    "domain": "library.community.home.arpa",
+    "compose": "apps/kiwix.yaml",
+    "container": "communityos-kiwix",
+    "data": "/opt/communityos/data/kiwix",
+    "requires": [
+      "caddy"
+    ]
+  },
+  "maps": {
+    "id": "maps",
+    "name": "Maps",
+    "description": "Offline maps (Martin tiles + MapLibre)",
+    "url": "https://maps.community.home.arpa",
+    "domain": "maps.community.home.arpa",
+    "compose": "apps/maps.yaml",
+    "container": "communityos-martin",
+    "data": "/opt/communityos/data/maps",
+    "requires": [
+      "caddy"
+    ]
+  },
+  "jellyfin": {
+    "id": "jellyfin",
+    "name": "Media",
+    "description": "Local media server for video, music, and community recordings",
+    "url": "https://media.community.home.arpa",
+    "domain": "media.community.home.arpa",
+    "compose": "apps/jellyfin.yaml",
+    "container": "communityos-jellyfin",
+    "data": "/opt/communityos/data/jellyfin",
+    "requires": [
+      "caddy"
+    ]
+  },
+  "nextcloud": {
+    "id": "nextcloud",
+    "name": "Files",
+    "description": "Personal and shared file storage (Nextcloud)",
+    "url": "https://files.community.home.arpa",
+    "domain": "files.community.home.arpa",
+    "compose": "apps/nextcloud.yaml",
+    "container": "communityos-nextcloud",
+    "data": "/opt/communityos/data/nextcloud",
+    "requires": [
+      "caddy",
+      "mariadb"
+    ]
+  },
+  "peertube": {
+    "id": "peertube",
+    "name": "Streaming",
+    "description": "Community video hosting and live streaming (resource-intensive \u2014 extra CPU/RAM/disk recommended)",
+    "url": "https://stream.community.home.arpa",
+    "domain": "stream.community.home.arpa",
+    "compose": "apps/peertube.yaml",
+    "container": "communityos-peertube",
+    "data": "/opt/communityos/data/peertube",
+    "requires": [
+      "caddy",
+      "postgres"
+    ]
+  },
+  "hermes": {
+    "id": "hermes",
+    "name": "Agent",
+    "description": "Hermes Agent \u2014 autonomous local agent with tools + native admin dashboard (opt-in)",
+    "url": "https://hermes.community.home.arpa",
+    "domain": "hermes.community.home.arpa",
+    "compose": "apps/hermes.yaml",
+    "container": "communityos-hermes",
+    "data": "/opt/communityos/data/hermes",
+    "requires": [
+      "ollama"
+    ]
+  }
+}
