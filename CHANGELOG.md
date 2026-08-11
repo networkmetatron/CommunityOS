@@ -1,4 +1,11 @@
-## Unreleased (target 1.1.4)
+## v1.1.5
+
+- Hermes Agent fixes and documentation
+  - Fix the default Hermes Ollama model to `llama3.2:3b`
+  - Document the distinction between minimal local Hermes inference and full tool-capable agent operation
+  - Document model hardware considerations and how to install an alternative Ollama model
+
+## v1.1.4
 
 - Hermes optional app: native **web dashboard** via Caddy
   - `HERMES_DASHBOARD=1` in the same isolated container (no second service)
@@ -49,7 +56,6 @@
 - Offline bundles remain a separate artifact via `package-offline.sh`
 - PeerTube: rename built-in root administrator to ADMIN_USER (usually admin) and set password from ADMIN_PASS
 - See `docs/OFFLINE.md` and `docs/DEVELOPMENT.md`
-
 
 ## v1.1.0
 
