@@ -31,6 +31,15 @@ Administrators
 - **Hermes Dashboard** is Hermes’s own admin UI (sessions, config, keys, optional Chat tab).
 - CommunityOS does **not** fork or reimplement the dashboard.
 
+## Model capability and hardware
+
+CommunityOS defaults to the lightweight `llama3.2:3b` model so Hermes can run on modest hardware. This provides minimal local Hermes inference, but `llama3.2:3b` does not provide reliable structured tool calling for the full agent experience.
+
+For full agent capabilities such as terminal operations, file manipulation, browser control, and multi-step tool workflows, use a tool-capable model appropriate for the appliance hardware. The existing CommunityOS Ollama service is reused; model weights are not duplicated inside the Hermes container.
+
+Check installed models with `sudo docker exec communityos-ollama ollama list` and install an additional model with `sudo docker exec -it communityos-ollama ollama pull <model>`. Larger agentic models can require substantially more RAM and can be slower on CPU-only appliances.
+
+
 ## Ports (critical)
 
 | Port | Role | Host/LAN publish? |
