@@ -2332,7 +2332,7 @@ MAPREADME
 model:
   provider: custom
   # Change after: docker exec -it communityos-ollama ollama pull <name>
-  model: llama3.2
+  model: llama3.2:3b
   base_url: http://ollama:11434/v1
   api_key: "none"
 
