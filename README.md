@@ -1,176 +1,387 @@
 # CommunityOS
 
-**Version 1.1.0**
+**Current release:** see `VERSION`
 
-> Take a clean Debian installation and turn it into a private, self-hosted community server with one command.
+> A private, self-hosted community server built on Debian 13.
+
+CommunityOS provides local-first Website, Chat, AI, and optional apps from one server.
 
 ## Install
 
 1. Install Debian 13.
-2. On the server:
+2. Copy or clone CommunityOS onto the server.
+3. Run:
 
 ```bash
 sudo ./install.sh
 ```
 
-3. Answer a few questions.
-4. DNS option during install:
-   - **Y** — CommunityOS provides LAN DNS (`*.home.arpa`); set router DHCP DNS to this server.
-   - **n** — You manage DNS yourself (Pi-hole, router, `/etc/hosts`, etc.).
-5. **Reconnect clients** (Wi‑Fi off/on, Ethernet replug, or renew DHCP lease) so they pick up the new DNS.
-6. Open **http://community.home.arpa**, install the **CommunityOS certificate once** (covers all services), then use HTTPS.
+4. Answer the setup questions.
+5. If you enable CommunityOS LAN DNS, set your router's DHCP DNS server to the CommunityOS server.
+6. Reconnect client devices to Wi-Fi/Ethernet so they receive the new DNS settings.
+7. Open:
 
-If `community.home.arpa` does not resolve:
+```text
+http://community.home.arpa
+```
 
-- Disconnect and reconnect Wi‑Fi  
-- **OR** unplug/reconnect Ethernet  
-- **OR** renew the DHCP lease  
+8. Install the CommunityOS certificate from the welcome page.
 
-The device may still be using its previous DNS configuration.
+If `community.home.arpa` does not resolve, reconnect the client to the network or renew its DHCP lease.
 
 ## Certificate
 
-CommunityOS uses one local CA for every hostname. Install `http://community.home.arpa/ca.crt` once on each device. After that, Website, Chat, Assistant, and optional apps should not show browser trust warnings.
+CommunityOS uses one local CA for all CommunityOS hostnames.
 
-## Assistant / Ollama
+Install the certificate once on each device:
 
-Ollama is installed with CommunityOS but **no model weights are downloaded**. Pull a model when ready:
+```text
+http://community.home.arpa/ca.crt
+```
+
+After the certificate is trusted, Website, Chat, Assistant, and installed optional apps can use HTTPS without browser certificate warnings.
+
+## AI / Ollama
+
+CommunityOS installs Ollama but does not download model weights automatically.
+
+List installed models:
+
+```bash
+sudo docker exec communityos-ollama ollama list
+```
+
+Install a model:
 
 ```bash
 sudo docker exec -it communityos-ollama ollama pull llama3.2
 ```
 
-Then open https://ai.community.home.arpa and select the model. CPU-only hosts are supported; a GPU is optional.
+Then open:
 
-Optional **Hermes Agent** (`communityos app install hermes`) adds a tool-using
-agent backend that reuses the same Ollama models. Open WebUI remains the
-user-facing UI. Hermes is never installed by default — see [docs/HERMES.md](docs/HERMES.md).
+```text
+https://ai.community.home.arpa
+```
+
+and select the model.
+
+CPU-only systems are supported. A GPU is optional.
+
+### Hermes Agent
+
+Hermes is an optional tool-using agent:
+
+```bash
+sudo communityos app install hermes
+```
+
+Hermes reuses the existing CommunityOS Ollama service, so model weights are not duplicated.
+
+The default Hermes model is:
+
+```text
+llama3.2:3b
+```
+
+This provides lightweight local Hermes inference and is suitable for modest hardware, but it does not provide reliable structured tool calling for the full agent experience.
+
+For full terminal, file, browser, and multi-step tool workflows, use a tool-capable model appropriate for the server's hardware.
+
+Hermes is never installed by default.
+
+See `docs/HERMES.md` for Hermes-specific configuration and security details.
 
 ## Optional apps
 
+List available apps:
+
 ```bash
 communityos apps
-sudo communityos app install kiwix      # Library
-sudo communityos app install maps       # Maps
-sudo communityos app install jellyfin   # Media
-sudo communityos app install nextcloud  # Files
-sudo communityos app install peertube   # Streaming
-sudo communityos app install hermes     # Agent + dashboard (opt-in; see docs/HERMES.md)
 ```
 
-Installing an app updates DNS (when CommunityOS DNS is enabled) and reloads Caddy so certificates stay consistent. The same CommunityOS CA is used.
-
-| App | URL |
-|-----|-----|
-| Library (Kiwix) | https://library.community.home.arpa |
-| Maps | https://maps.community.home.arpa |
-
-Maps installs the pinned `pmtiles` CLI under `/opt/communityos/bin/pmtiles`
-
-Region downloads use a **pinned Protomaps daily build** (not an old year-stale default). Configure without code changes:
+Install an app:
 
 ```bash
-# /opt/communityos/.env  OR  /opt/communityos/config/maps-source.env
+sudo communityos app install kiwix
+sudo communityos app install maps
+sudo communityos app install jellyfin
+sudo communityos app install nextcloud
+sudo communityos app install peertube
+sudo communityos app install hermes
+```
+
+Remove an app:
+
+```bash
+sudo communityos app remove <app>
+```
+
+Installing an app updates DNS, when CommunityOS DNS is enabled, and reloads Caddy. The same CommunityOS CA is used for optional apps.
+
+| App | Address |
+|---|---|
+| Website | https://community.home.arpa |
+| Chat | https://chat.community.home.arpa |
+| Assistant | https://ai.community.home.arpa |
+| Library | https://library.community.home.arpa |
+| Maps | https://maps.community.home.arpa |
+| Media | https://media.community.home.arpa |
+| Files | https://files.community.home.arpa |
+| Streaming | https://stream.community.home.arpa |
+| Hermes | https://hermes.community.home.arpa |
+
+## Maps
+
+Maps uses a pinned Protomaps build.
+
+The source can be configured in:
+
+```text
+/opt/communityos/.env
+```
+
+or:
+
+```text
+/opt/communityos/config/maps-source.env
+```
+
+Example:
+
+```bash
 PMTILES_SOURCE_URL=https://build.protomaps.com/20260807.pmtiles
 ```
 
-Then `sudo communityos app restart maps`. Current CommunityOS default is the **2026-08-07** build. (not via apt). Place `.pmtiles` / `.mbtiles` in `/opt/communityos/data/maps/` and run `sudo communityos app restart maps`. See that directory’s README for import examples.
-| Media (Jellyfin) | https://media.community.home.arpa |
-| Files (Nextcloud) | https://files.community.home.arpa |
-| Streaming (PeerTube) | https://stream.community.home.arpa |
-
-
-## Offline installation (air-gapped)
-
-For servers **without Internet access**, build an offline bundle on a connected machine, copy it by USB, then install:
+Restart Maps after changing the source:
 
 ```bash
-# On a connected Debian 13 builder:
-sudo ./scripts/package-offline.sh 1.1.1
+sudo communityos app restart maps
+```
 
-# On the air-gapped server:
-tar -xf communityos-offline-v1.1.1-amd64.tar
-cd communityos-offline-v1.1.1-amd64
+Additional `.pmtiles` or `.mbtiles` files can be placed in:
+
+```text
+/opt/communityos/data/maps/
+```
+
+See the Maps data directory README for import details.
+
+## Offline installation
+
+CommunityOS can be packaged for an air-gapped server.
+
+Build the offline bundle on a connected Debian 13 machine:
+
+```bash
+sudo ./scripts/package-offline.sh
+```
+
+The packager automatically uses the version in `VERSION`.
+
+You can also provide a version explicitly:
+
+```bash
+sudo ./scripts/package-offline.sh <version>
+```
+
+The bundle is created under:
+
+```text
+dist/
+```
+
+Copy the resulting bundle to the air-gapped server by USB or other offline media.
+
+On the air-gapped server:
+
+```bash
+tar -xf communityos-offline-v<version>-<arch>.tar
+cd communityos-offline-v<version>-<arch>
 sudo ./install.sh
 ```
 
-The offline bundle includes Debian packages and Docker images. The installer will not contact Docker Hub, GHCR, or Debian mirrors.
+The offline bundle includes the required Debian packages and Docker images.
 
-See [docs/OFFLINE.md](docs/OFFLINE.md) for the full format, guarantees, and test checklist.
+The offline installer does not contact Docker Hub, GHCR, or Debian mirrors.
 
-Normal (online) GitHub releases use **git tags** and GitHub's automatic Source Code archives only — do not publish a custom `communityos-vX.Y.Z.zip` as a release asset. Offline bundles are produced separately with `scripts/package-offline.sh`.
+See `docs/OFFLINE.md` for the full offline format and validation checklist.
 
 ## Everyday commands
 
+Show the current version:
+
 ```bash
-communityos info
-communityos status
-communityos doctor
-communityos logs
-communityos update
-communityos backup
-communityos start
-communityos stop
-communityos uninstall
-communityos matrix invite                       # single-use Chat registration invitation
-communityos matrix federation status            # mode: off | private | public
-communityos matrix federation enable --private  # CommunityOS / LAN peers
-communityos matrix federation enable --public   # global Matrix network
+communityos version
 ```
 
-Chat registration is **invitation-only**: generate a token with `communityos matrix invite`, share the registration link and token, and the person creates their own Matrix account. Open registration without a token stays disabled.
+Show connection information:
 
-Matrix **federation** is off by default. Use `--private` for trusted CommunityOS-to-CommunityOS networks, or `--public` for the global Matrix network. See [docs/MATRIX_FEDERATION.md](docs/MATRIX_FEDERATION.md).
+```bash
+communityos info
+```
+
+Show platform status:
+
+```bash
+communityos status
+```
+
+Run health checks:
+
+```bash
+communityos doctor
+```
+
+View logs:
+
+```bash
+communityos logs
+```
+
+Update CommunityOS:
+
+```bash
+sudo communityos update
+```
+
+Start services:
+
+```bash
+sudo communityos start
+```
+
+Stop services:
+
+```bash
+sudo communityos stop
+```
+
+Restart services:
+
+```bash
+sudo communityos restart
+```
+
+Back up CommunityOS:
+
+```bash
+sudo communityos backup
+```
+
+## Matrix Chat
+
+Chat registration is invitation-only.
+
+Create an invitation:
+
+```bash
+communityos matrix invite
+```
+
+Share the registration link and token with the person joining the community.
+
+Matrix federation is off by default.
+
+Check federation status:
+
+```bash
+communityos matrix federation status
+```
+
+Enable private CommunityOS-to-CommunityOS federation:
+
+```bash
+sudo communityos matrix federation enable --private
+```
+
+Enable public Matrix federation:
+
+```bash
+sudo communityos matrix federation enable --public
+```
+
+See `docs/MATRIX_FEDERATION.md` for federation details.
+
+## Local-first behavior
+
+CommunityOS is designed to keep core services working on the LAN when the Internet is unavailable.
+
+With the router WAN disconnected, verify:
+
+- Website
+- Chat
+- Assistant
+- Installed optional apps
+- LAN DNS, when enabled
+- HTTPS using the CommunityOS CA
+- Local content and LAN chat
+
+The following require Internet access:
+
+- Docker image downloads
+- Internet-backed AI models
+- Public Matrix federation
+- External package updates
 
 ## Services
 
-| Address | Purpose |
-|---------|---------|
-| community.home.arpa | Website |
-| chat.community.home.arpa | Chat |
-| ai.community.home.arpa | Assistant (Open WebUI)
-| 127.0.0.1:11434 (server only) | Ollama API |
+Everything is managed under:
 
-Everything lives under `/opt/communityos`. Docker is an implementation detail. Images are pinned for reproducibility.
-
-See [PRINCIPLES.md](PRINCIPLES.md).
-
-## Offline / local-first check
-
-With the router WAN disconnected (or WAN cable unplugged), verify local services still load:
-
-- Website, Chat, Assistant  
-- Any installed optional apps (Library, Maps, Media, Files, Streaming)
-
-**Expected to fail offline:** Docker image pulls, internet-backed AI models, Matrix federation to the public network, external package updates.
-
-**Expected to keep working:** LAN DNS (if enabled), HTTPS with the CommunityOS CA, local content and chat between devices on the LAN.
-
-## Release validation (maintainers)
-
-Before tagging a release:
-
-- [ ] Fresh Debian 13 install  
-- [ ] DNS enabled (Y) and DNS disabled (n)  
-- [ ] Android + Windows clients; Firefox + Chrome  
-- [ ] Certificate install from welcome page  
-- [ ] Client reconnect / DHCP renewal guidance verified  
-- [ ] WAN disconnected: core services still reachable on LAN  
-- [ ] Optional app install/remove; Caddy reload; same CA trusted  
-- [ ] `communityos doctor` healthy; no stale `/etc/hosts` surprises  
-
-## Future install path
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/networkmetatron/CommunityOS/main/install.sh | sudo bash
+```text
+/opt/communityos
 ```
 
-Until then, copy the release onto the server and run `sudo ./install.sh`.
+The primary local Ollama API is:
+
+```text
+127.0.0.1:11434
+```
+
+Docker is an implementation detail of the platform.
+
+See `PRINCIPLES.md` for the project design principles.
+
+## Updating
+
+For a normal connected server:
+
+```bash
+sudo communityos update
+```
+
+The `VERSION` file is the single source of truth for the CommunityOS release version.
+
+The CLI, README, and offline packager should not contain manually maintained copies of the current release number.
 
 ## Development
 
-The install path is `/opt/communityos`. Developers keep source in a **Git clone** (e.g. `~/communityos`) and must not extract release ZIPs over that tree.
+The development repository should remain a Git clone, for example:
 
-- Workflow: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
-- Package a release: `./scripts/package-release.sh` → `~/releases/communityos-v*.zip`
-- Test a ZIP under `~/releases/`, never by replacing the Git working tree
+```text
+~/communityos
+```
+
+The installed CommunityOS system lives at:
+
+```text
+/opt/communityos
+```
+
+Do not extract release archives over the Git working tree.
+
+See:
+
+- `docs/DEVELOPMENT.md`
+- `docs/OFFLINE.md`
+- `docs/HERMES.md`
+- `docs/MATRIX_FEDERATION.md`
+
+## Uninstall
+
+To remove CommunityOS:
+
+```bash
+sudo communityos uninstall
+```
+
+Back up any persistent community data before uninstalling.

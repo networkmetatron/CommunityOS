@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prefer installed location; fall back to package directory when running from media
-if [[ -d /opt/communityos ]]; then
-  export COMMUNITYOS_ROOT=/opt/communityos
-elif [[ -f "$(cd "$(dirname "$0")/.." && pwd)/compose.yaml" ]]; then
-  export COMMUNITYOS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Prefer the repository directory when running from a Git working tree.
+# Otherwise use the installed CommunityOS location.
+
+SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ -f "${SCRIPT_ROOT}/compose.yaml" && -f "${SCRIPT_ROOT}/VERSION" ]]; then
+  export COMMUNITYOS_ROOT="${SCRIPT_ROOT}"
 else
   export COMMUNITYOS_ROOT=/opt/communityos
 fi
 
 # shellcheck source=/dev/null
 source "${COMMUNITYOS_ROOT}/lib/common.sh" 2>/dev/null || source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
+
+communityos_version() {
+    if [[ -f "${COMMUNITYOS_ROOT}/VERSION" ]]; then
+        cat "${COMMUNITYOS_ROOT}/VERSION"
+    else
+        echo "unknown"
+    fi
+}
 
 usage() {
   cat <<'USAGE'
@@ -70,8 +80,8 @@ USAGE
 cmd_info() {
   ensure_installed 2>/dev/null || true
 
-  local ver="1.1.0"
-  [[ -f "${COMMUNITYOS_ROOT}/VERSION" ]] && ver="$(tr -d '\n' < "${COMMUNITYOS_ROOT}/VERSION")"
+  local ver
+  ver="$(communityos_version)"
 
   local domain_base="community.home.arpa"
   local domain_chat="chat.community.home.arpa"
@@ -245,18 +255,14 @@ cmd_info() {
 }
 
 cmd_version() {
-  if [[ -f "${COMMUNITYOS_ROOT}/VERSION" ]]; then
-    cat "${COMMUNITYOS_ROOT}/VERSION"
-  else
-    echo "1.0.2"
-  fi
+  communityos_version
 }
 
 cmd_status() {
   ensure_installed
 
-  local ver="1.1.0"
-  [[ -f "${COMMUNITYOS_ROOT}/VERSION" ]] && ver="$(tr -d '\n' < "${COMMUNITYOS_ROOT}/VERSION")"
+  local ver
+  ver="$(communityos_version)"
 
   local server_ip="" provide_dns="0"
   if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
