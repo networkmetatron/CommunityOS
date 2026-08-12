@@ -13,6 +13,12 @@ services:
       DOMAIN_BASE: ${DOMAIN_BASE}
       DOMAIN_CHAT: ${DOMAIN_CHAT}
       DOMAIN_AI: ${DOMAIN_AI}
+      DOMAIN_LIBRARY: ${DOMAIN_LIBRARY:-library.${DOMAIN_BASE}}
+      DOMAIN_MAPS: ${DOMAIN_MAPS:-maps.${DOMAIN_BASE}}
+      DOMAIN_MEDIA: ${DOMAIN_MEDIA:-media.${DOMAIN_BASE}}
+      DOMAIN_FILES: ${DOMAIN_FILES:-files.${DOMAIN_BASE}}
+      DOMAIN_STREAM: ${DOMAIN_STREAM:-stream.${DOMAIN_BASE}}
+      DOMAIN_HERMES: ${DOMAIN_HERMES:-hermes.${DOMAIN_BASE}}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./static/welcome:/srv/welcome:ro
@@ -26,7 +32,7 @@ services:
       - open-webui
       - synapse
 
-  # LAN DNS for *.community.home.arpa
+  # LAN DNS for CommunityOS hostnames (DOMAIN_BASE and derived names)
   dns:
     image: andyshinn/dnsmasq:2.76
     container_name: communityos-dns

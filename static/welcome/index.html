@@ -54,7 +54,7 @@
         (Website, Chat, Assistant, and optional apps). Install it once on this device.
       </p>
       <a class="btn btn-primary" href="/ca.crt" download="communityos-ca.crt">Install Certificate</a>
-      <a class="btn btn-secondary" href="https://community.home.arpa/">Continue to CommunityOS</a>
+      <a class="btn btn-secondary" href="/" id="btn-continue">Continue to CommunityOS</a>
       <p id="https-status" class="muted">Checking whether HTTPS is already trusted…</p>
       <p class="muted" style="margin-top:0.75rem">
         If the download fails, your device may still be using its previous DNS server.
@@ -65,9 +65,9 @@
     <div class="card">
       <h2>2. After trusting the certificate</h2>
       <ul>
-        <li><a href="https://community.home.arpa/">https://community.home.arpa</a> — Website</li>
-        <li><a href="https://chat.community.home.arpa/">https://chat.community.home.arpa</a> — Chat</li>
-        <li><a href="https://ai.community.home.arpa/">https://ai.community.home.arpa</a> — Assistant</li>
+        <li><a id="link-web" href="/">Website</a> — Websitesite</li>
+        <li><a id="link-chat" href="#">Chat</a> — Chat</li>
+        <li><a id="link-ai" href="#">Assistant</a> — Assistant</li>
       </ul>
       <p class="muted">Optional apps use the same certificate once installed (library, maps, media, files, stream).</p>
     </div>
@@ -75,7 +75,7 @@
     <div class="card">
       <h2>Can't reach CommunityOS?</h2>
       <ol>
-        <li>Verify <code>community.home.arpa</code> resolves (try reconnecting to the network).</li>
+        <li>Verify this hostname resolves (try reconnecting to the network).</li>
         <li>Disconnect and reconnect Wi‑Fi, or unplug/replug Ethernet, or renew the DHCP lease.</li>
         <li>Install the CommunityOS certificate (button above).</li>
         <li>Refresh the browser (or open a private window).</li>
@@ -90,7 +90,7 @@
       var el = document.getElementById("https-status");
       var ctrl = new AbortController();
       setTimeout(function () { ctrl.abort(); }, 2500);
-      fetch("https://community.home.arpa/", { mode: "no-cors", signal: ctrl.signal })
+      fetch(window.location.origin + "/", { mode: "no-cors", signal: ctrl.signal })
         .then(function () {
           el.innerHTML = '<span class="ok">Certificate already trusted on this browser.</span> You can continue to CommunityOS.';
         })
@@ -99,5 +99,23 @@
         });
     })();
   </script>
+
+<script>
+(function () {
+  var host = window.location.hostname || "community.home.arpa";
+  // If we are on the base host, derive chat/ai as chat.<base> / ai.<base>
+  var chat = "chat." + host;
+  var ai = "ai." + host;
+  var el;
+  el = document.getElementById("link-chat");
+  if (el) { el.href = "https://" + chat + "/"; el.textContent = "https://" + chat; }
+  el = document.getElementById("link-ai");
+  if (el) { el.href = "https://" + ai + "/"; el.textContent = "https://" + ai; }
+  el = document.getElementById("link-web");
+  if (el) { el.href = "https://" + host + "/"; el.textContent = "https://" + host; }
+  el = document.getElementById("btn-continue");
+  if (el) { el.href = "https://" + host + "/"; }
+})();
+</script>
 </body>
 </html>

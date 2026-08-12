@@ -83,9 +83,9 @@ cmd_info() {
   local ver
   ver="$(communityos_version)"
 
-  local domain_base="community.home.arpa"
-  local domain_chat="chat.community.home.arpa"
-  local domain_ai="ai.community.home.arpa"
+  local domain_base="${DOMAIN_BASE:-community.home.arpa}"
+  local domain_chat="${DOMAIN_CHAT:-chat.${domain_base}}"
+  local domain_ai="${DOMAIN_AI:-ai.${domain_base}}"
   local server_ip="" community_name="" provide_dns="0"
 
   if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
@@ -98,6 +98,8 @@ cmd_info() {
       set +a
     fi
     domain_base="${DOMAIN_BASE:-$domain_base}"
+    domain_chat="${DOMAIN_CHAT:-chat.${domain_base}}"
+    domain_ai="${DOMAIN_AI:-ai.${domain_base}}"
     domain_chat="${DOMAIN_CHAT:-$domain_chat}"
     domain_ai="${DOMAIN_AI:-$domain_ai}"
     server_ip="${SERVER_IP:-}"
@@ -366,7 +368,7 @@ cmd_status() {
     if docker exec communityos-caddy test -f /data/caddy/pki/authorities/local/root.crt 2>/dev/null; then
       echo "  ✓ CommunityOS CA"
     else
-      echo "  ○ CommunityOS CA (not issued yet — open http://community.home.arpa once)"
+      echo "  ○ CommunityOS CA (not issued yet — open http://${DOMAIN_BASE:-community.home.arpa} once)"
     fi
     echo "  ✓ Service certificates issued by local CA (tls internal)"
   else
@@ -465,7 +467,7 @@ cmd_update() {
   compose up -d
   log_ok "Update complete."
   echo
-  echo "Open:  https://community.home.arpa"
+  echo "Open:  https://${DOMAIN_BASE:-community.home.arpa}"
 }
 
 cmd_backup() {
@@ -628,7 +630,7 @@ cmd_doctor() {
       fi
       printf '%s' "${ans}"
     }
-    for name in community.home.arpa chat.community.home.arpa ai.community.home.arpa; do
+    for name in "${DOMAIN_BASE:-community.home.arpa}" "${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}" "${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}"; do
       ans="$(resolve_name "${name}" || true)"
       if [[ -n "${ans}" ]]; then
         pass "${name} resolves (${ans})"
@@ -639,7 +641,7 @@ cmd_doctor() {
   else
     echo "  · CommunityOS DNS not running (disabled or external DNS)"
     # Still check if names resolve somehow (hosts file / other DNS)
-    for name in community.home.arpa chat.community.home.arpa ai.community.home.arpa; do
+    for name in "${DOMAIN_BASE:-community.home.arpa}" "${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}" "${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}"; do
       ans="$(getent hosts "${name}" 2>/dev/null | awk '{print $1}' | head -1 || true)"
       if [[ -n "${ans}" ]]; then
         pass "${name} resolves (${ans})"
@@ -659,7 +661,7 @@ cmd_doctor() {
   # Website — prefer container-local check, then host curl
   if docker exec communityos-wordpress bash -c 'exec 3<>/dev/tcp/127.0.0.1/80' >/dev/null 2>&1 \
      || docker exec communityos-caddy wget -q -O /dev/null http://wordpress:80/ >/dev/null 2>&1 \
-     || curl -fsS --connect-timeout 3 -H "Host: community.home.arpa" http://127.0.0.1/ >/dev/null 2>&1; then
+     || curl -fsS --connect-timeout 3 -H "Host: ${DOMAIN_BASE:-community.home.arpa}" http://127.0.0.1/ >/dev/null 2>&1; then
     pass "Website"
   else
     fail "Website"
@@ -732,7 +734,7 @@ cmd_doctor() {
       echo
       echo "Server DNS is working."
       echo
-      echo "If another device cannot resolve community.home.arpa:"
+      echo "If another device cannot resolve ${DOMAIN_BASE:-community.home.arpa}:"
       echo "  • Disconnect and reconnect Wi-Fi"
       echo "  • OR unplug/reconnect Ethernet"
       echo "  • OR renew the DHCP lease"
@@ -784,7 +786,7 @@ cmd_uninstall() {
     echo "  · Data volumes (kept unless you choose delete)"
     echo "  · Configuration (kept unless you choose delete)"
   fi
-  echo "  ✓ DNS service for community.home.arpa"
+  echo "  ✓ DNS service for ${DOMAIN_BASE:-community.home.arpa}"
   echo
   echo "It will NOT remove by default:"
   echo "  • Docker Engine"
@@ -996,6 +998,11 @@ repair_env_quotes() {
 }
 
 load_env() {
+  if [[ -f "${COMMUNITYOS_ROOT}/lib/domain.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${COMMUNITYOS_ROOT}/lib/domain.sh"
+    domain_load
+  fi
   local f="${COMMUNITYOS_ROOT}/.env"
   [[ -f "${f}" ]] || return 0
   while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -2012,9 +2019,9 @@ cmd_apps() {
   echo "================"
   echo
   echo "Installed (core)"
-  echo "  ✓ Website      https://community.home.arpa"
-  echo "  ✓ Chat         https://chat.community.home.arpa"
-  echo "  ✓ Assistant    https://ai.community.home.arpa"
+  echo "  ✓ Website      https://${DOMAIN_BASE:-community.home.arpa}"
+  echo "  ✓ Chat         https://${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}"
+  echo "  ✓ Assistant    https://${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}"
   echo
   echo "Optional"
   local id name desc url ctn status
@@ -2282,7 +2289,7 @@ cmd_app() {
           cat > "${COMMUNITYOS_ROOT}/data/maps/README.txt" <<'MAPREADME'
 Place .pmtiles or .mbtiles files in this directory, then:
   sudo communityos app restart maps
-Open: https://maps.community.home.arpa
+Open: https://${DOMAIN_MAPS:-maps.${DOMAIN_BASE:-community.home.arpa}}
 PMTiles CLI: /opt/communityos/bin/pmtiles
 MAPREADME
         fi
@@ -2508,8 +2515,8 @@ HERMESENV
         load_env 2>/dev/null || true
         echo
         echo "  Three-layer AI layout:"
-        echo "    Open WebUI          https://ai.community.home.arpa     (everyday chat)"
-        echo "    Hermes Dashboard    https://hermes.community.home.arpa (admin only)"
+        echo "    Open WebUI          https://${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}     (everyday chat)"
+        echo "    Hermes Dashboard    https://${DOMAIN_HERMES:-hermes.${DOMAIN_BASE:-community.home.arpa}} (admin only)"
         echo "    Hermes API          http://hermes:8642/v1              (internal)"
         echo
         echo "  Dashboard login (Hermes Basic Auth — not CommunityOS SSO):"
@@ -2532,7 +2539,7 @@ HERMESENV
         echo "    Keep the Ollama connection for ordinary chat."
         echo
         echo "  Ports 8642 and 9119 are NOT published to the host/LAN."
-        echo "  Access the dashboard only via https://hermes.community.home.arpa"
+        echo "  Access the dashboard only via https://${DOMAIN_HERMES:-hermes.${DOMAIN_BASE:-community.home.arpa}}"
         echo "  (CommunityOS CA). Do not expose it to the public Internet."
       fi
       if [[ "${id}" == "maps" ]]; then
@@ -2742,7 +2749,7 @@ cmd_maps_download() {
   docker restart communityos-martin >/dev/null 2>&1 || true
   log_ok "Dataset ready: ${dest}"
   echo
-  echo "  Open: https://maps.community.home.arpa"
+  echo "  Open: https://${DOMAIN_MAPS:-maps.${DOMAIN_BASE:-community.home.arpa}}"
   echo "  Source should list: ${name}"
   echo
 }
@@ -3061,7 +3068,7 @@ cmd_matrix_federation_status() {
     domain="$(grep -E '^DOMAIN_CHAT=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
   fi
   domain="${domain%\'}"; domain="${domain#\'}"
-  domain="${domain:-chat.community.home.arpa}"
+  domain="${domain:-${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}}"
 
   local mode
   mode="$(matrix_federation_mode)"
@@ -3341,7 +3348,7 @@ cmd_matrix_invite() {
   load_env 2>/dev/null || true
   local admin_user="${ADMIN_USER:-admin}"
   local admin_pass="${ADMIN_PASS:-}"
-  local domain_chat="${DOMAIN_CHAT:-chat.community.home.arpa}"
+  local domain_chat="${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}"
   admin_user="${admin_user%\'}"
   admin_user="${admin_user#\'}"
   admin_pass="${admin_pass%\'}"

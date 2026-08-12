@@ -1,6 +1,6 @@
 {
 	# One local CA for every CommunityOS hostname.
-	# Users install the CA once from http://community.home.arpa/ca.crt
+	# Users install the CA once from http://$DOMAIN_BASE/ca.crt
 	local_certs
 }
 
@@ -54,8 +54,8 @@ http://{$DOMAIN_BASE} {
 	reverse_proxy open-webui:8080
 }
 
-# Optional apps — same local CA (certificate issued on first HTTPS request or after Caddy reload)
-library.community.home.arpa {
+# Optional apps — hostnames from DOMAIN_* (derived from DOMAIN_BASE)
+{$DOMAIN_LIBRARY} {
 	encode gzip
 	tls internal
 	handle {
@@ -68,7 +68,7 @@ library.community.home.arpa {
 	}
 }
 
-maps.community.home.arpa {
+{$DOMAIN_MAPS} {
 	encode gzip
 	tls internal
 	handle /tiles/* {
@@ -85,7 +85,7 @@ maps.community.home.arpa {
 	}
 }
 
-media.community.home.arpa {
+{$DOMAIN_MEDIA} {
 	encode gzip
 	tls internal
 	handle {
@@ -98,7 +98,7 @@ media.community.home.arpa {
 	}
 }
 
-files.community.home.arpa {
+{$DOMAIN_FILES} {
 	encode gzip
 	tls internal
 	handle {
@@ -111,7 +111,7 @@ files.community.home.arpa {
 	}
 }
 
-stream.community.home.arpa {
+{$DOMAIN_STREAM} {
 	encode gzip
 	tls internal
 	handle {
@@ -124,7 +124,7 @@ stream.community.home.arpa {
 	}
 }
 
-hermes.community.home.arpa {
+{$DOMAIN_HERMES} {
 	encode gzip
 	tls internal
 	handle {

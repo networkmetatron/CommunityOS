@@ -27,7 +27,36 @@
     <p>Install it on the server with:</p>
     <code>sudo communityos app install maps</code>
     <p style="margin-top:1rem">Add .mbtiles or .pmtiles files to /opt/communityos/data/maps/ after installing.</p>
-    <p><a href="https://community.home.arpa">Back to CommunityOS</a></p>
+    <p><a href="/" id="cos-back">Back to CommunityOS</a></p>
   </div>
+
+<script>
+(function () {
+  function baseHost(host) {
+    host = (host || "").toLowerCase();
+    if (!host || host === "localhost" || /^[0-9.]+$/.test(host)) {
+      return "community.home.arpa";
+    }
+    // service.community.example.com → community.example.com
+    // community.example.com stays as-is when first label is not a known service prefix
+    var prefixes = ["chat","ai","library","maps","media","files","stream","hermes"];
+    var parts = host.split(".");
+    if (parts.length >= 3 && prefixes.indexOf(parts[0]) >= 0) {
+      return parts.slice(1).join(".");
+    }
+    return host;
+  }
+  var base = baseHost(window.location.hostname);
+  var ai = "ai." + base;
+  var el;
+  el = document.getElementById("cos-back");
+  if (el) { el.href = "https://" + base + "/"; }
+  el = document.getElementById("cos-home");
+  if (el) { el.href = "https://" + base + "/"; }
+  el = document.getElementById("cos-ai");
+  if (el) { el.href = "https://" + ai + "/"; el.textContent = "https://" + ai; }
+})();
+</script>
+
 </body>
 </html>

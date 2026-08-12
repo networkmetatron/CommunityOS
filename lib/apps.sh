@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# shellcheck source=/dev/null
+: "${COMMUNITYOS_ROOT:=/opt/communityos}"
+[[ -f "${COMMUNITYOS_ROOT}/lib/domain.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/domain.sh"
 # Optional app helpers — metadata from apps/*.manifest.yaml / registry.json
 
 APPS_DIR="${COMMUNITYOS_ROOT}/apps"
@@ -31,6 +34,37 @@ app_disable_flag() {
 # Print a field from the registry for an app id: name|description|url|domain|container|data|compose
 app_meta() {
   local id="$1" field="$2"
+  # Domain/URL always follow DOMAIN_BASE (registry defaults are documentation-only)
+  if [[ "${field}" == "domain" || "${field}" == "url" ]]; then
+    if declare -F domain_for >/dev/null 2>&1; then
+      case "${id}" in
+        kiwix)
+          [[ "${field}" == domain ]] && { echo "$(domain_for library)"; return; }
+          echo "https://$(domain_for library)"; return
+          ;;
+        maps)
+          [[ "${field}" == domain ]] && { echo "$(domain_for maps)"; return; }
+          echo "https://$(domain_for maps)"; return
+          ;;
+        jellyfin)
+          [[ "${field}" == domain ]] && { echo "$(domain_for media)"; return; }
+          echo "https://$(domain_for media)"; return
+          ;;
+        nextcloud)
+          [[ "${field}" == domain ]] && { echo "$(domain_for files)"; return; }
+          echo "https://$(domain_for files)"; return
+          ;;
+        peertube)
+          [[ "${field}" == domain ]] && { echo "$(domain_for stream)"; return; }
+          echo "https://$(domain_for stream)"; return
+          ;;
+        hermes)
+          [[ "${field}" == domain ]] && { echo "$(domain_for hermes)"; return; }
+          echo "https://$(domain_for hermes)"; return
+          ;;
+      esac
+    fi
+  fi
   if [[ -f "${REGISTRY}" ]] && command -v python3 >/dev/null 2>&1; then
     python3 -c "
 import json,sys
@@ -44,30 +78,33 @@ print(app.get('${field}','') or '')
   case "${id}:${field}" in
     kiwix:name) echo "Library" ;;
     kiwix:description) echo "Offline knowledge library" ;;
-    kiwix:url) echo "https://library.community.home.arpa" ;;
+    kiwix:url) echo "https://$(domain_for library)" ;;
+    kiwix:domain) echo "$(domain_for library)" ;;
     kiwix:container) echo "communityos-kiwix" ;;
     maps:name) echo "Maps" ;;
     maps:description) echo "Offline maps (Martin + MapLibre)" ;;
-    maps:url) echo "https://maps.community.home.arpa" ;;
+    maps:url) echo "https://$(domain_for maps)" ;;
+    maps:domain) echo "$(domain_for maps)" ;;
     maps:container) echo "communityos-martin" ;;
     jellyfin:name) echo "Media" ;;
     jellyfin:description) echo "Local media server" ;;
-    jellyfin:url) echo "https://media.community.home.arpa" ;;
+    jellyfin:url) echo "https://$(domain_for media)" ;;
+    jellyfin:domain) echo "$(domain_for media)" ;;
     jellyfin:container) echo "communityos-jellyfin" ;;
     nextcloud:name) echo "Files" ;;
     nextcloud:description) echo "Personal and shared file storage (Nextcloud)" ;;
-    nextcloud:url) echo "https://files.community.home.arpa" ;;
-    nextcloud:domain) echo "files.community.home.arpa" ;;
+    nextcloud:url) echo "https://$(domain_for files)" ;;
+    nextcloud:domain) echo "$(domain_for files)" ;;
     nextcloud:container) echo "communityos-nextcloud" ;;
     peertube:name) echo "Streaming" ;;
     peertube:description) echo "Community video hosting and live streaming" ;;
-    peertube:url) echo "https://stream.community.home.arpa" ;;
-    peertube:domain) echo "stream.community.home.arpa" ;;
+    peertube:url) echo "https://$(domain_for stream)" ;;
+    peertube:domain) echo "$(domain_for stream)" ;;
     peertube:container) echo "communityos-peertube" ;;
     hermes:name) echo "Agent" ;;
     hermes:description) echo "Hermes Agent — autonomous local agent with tools" ;;
-    hermes:url) echo "https://hermes.community.home.arpa" ;;
-    hermes:domain) echo "hermes.community.home.arpa" ;;
+    hermes:url) echo "https://$(domain_for hermes)" ;;
+    hermes:domain) echo "$(domain_for hermes)" ;;
     hermes:container) echo "communityos-hermes" ;;
     *:data) echo "${COMMUNITYOS_ROOT}/data/${id}" ;;
     *:compose) echo "apps/${id}.yaml" ;;
@@ -124,14 +161,9 @@ docker compose "${args[@]}" --env-file "${COMMUNITYOS_ROOT}/.env" "$@" "${extra[
 }
 
 app_update_dns() {
-  # Regenerate runtime/dnsmasq.conf from .env SERVER_IP (source of truth).
-  # Always rewrite — do not leave stale IPs after SERVER_IP changes.
+  # Regenerate runtime/dnsmasq.conf from .env SERVER_IP + DOMAIN_BASE.
   local conf="${COMMUNITYOS_ROOT}/runtime/dnsmasq.conf"
-  local ip="" provide_dns="0"
-  local domain_base="community.home.arpa"
-  local domain_chat="chat.community.home.arpa"
-  local domain_ai="ai.community.home.arpa"
-  local id domain
+  local ip=""
 
   if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
     set -a
@@ -139,53 +171,41 @@ app_update_dns() {
     source "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
     set +a
     ip="${SERVER_IP:-}"
-    provide_dns="${PROVIDE_DNS:-0}"
-    domain_base="${DOMAIN_BASE:-$domain_base}"
-    domain_chat="${DOMAIN_CHAT:-$domain_chat}"
-    domain_ai="${DOMAIN_AI:-$domain_ai}"
   fi
-  # Strip optional quotes from env values
   ip="${ip%\'}"; ip="${ip#\'}"
-  provide_dns="${provide_dns%\'}"; provide_dns="${provide_dns#\'}"
-  domain_base="${domain_base%\'}"; domain_base="${domain_base#\'}"
-  domain_chat="${domain_chat%\'}"; domain_chat="${domain_chat#\'}"
-  domain_ai="${domain_ai%\'}"; domain_ai="${domain_ai#\'}"
+  ip="${ip%\"}"; ip="${ip#\"}"
 
   if [[ -z "${ip}" ]]; then
     return 0
   fi
 
+  if declare -F domain_load >/dev/null 2>&1; then
+    domain_load
+  elif declare -F domain_derive >/dev/null 2>&1; then
+    domain_derive
+  else
+    DOMAIN_BASE="${DOMAIN_BASE:-community.home.arpa}"
+    DOMAIN_CHAT="${DOMAIN_CHAT:-chat.${DOMAIN_BASE}}"
+    DOMAIN_AI="${DOMAIN_AI:-ai.${DOMAIN_BASE}}"
+  fi
+
   mkdir -p "${COMMUNITYOS_ROOT}/runtime"
   {
-    echo "# CommunityOS LAN DNS — generated from .env SERVER_IP=${ip}"
+    echo "# CommunityOS LAN DNS — SERVER_IP=${ip} DOMAIN_BASE=${DOMAIN_BASE}"
     echo "# Do not edit by hand; regenerated on start/restart and app install."
     echo "domain-needed"
     echo "bogus-priv"
     echo "no-resolv"
     echo "server=1.1.1.1"
     echo "server=8.8.8.8"
-    echo "address=/${domain_base}/${ip}"
-    echo "address=/${domain_chat}/${ip}"
-    echo "address=/${domain_ai}/${ip}"
+    if declare -F domain_dnsmasq_addresses >/dev/null 2>&1; then
+      domain_dnsmasq_addresses "${ip}"
+    else
+      echo "address=/${DOMAIN_BASE}/${ip}"
+      echo "address=/${DOMAIN_CHAT}/${ip}"
+      echo "address=/${DOMAIN_AI}/${ip}"
+    fi
   } > "${conf}"
-
-  if declare -F app_list_ids >/dev/null 2>&1; then
-    for id in $(app_list_ids); do
-      domain="$(app_meta "${id}" domain 2>/dev/null || true)"
-      domain="${domain%\'}"; domain="${domain#\'}"
-      [[ -z "${domain}" ]] && continue
-      echo "address=/${domain}/${ip}" >> "${conf}"
-    done
-  else
-    {
-      echo "address=/library.community.home.arpa/${ip}"
-      echo "address=/maps.community.home.arpa/${ip}"
-      echo "address=/media.community.home.arpa/${ip}"
-      echo "address=/files.community.home.arpa/${ip}"
-      echo "address=/stream.community.home.arpa/${ip}"
-      echo "address=/hermes.community.home.arpa/${ip}"
-    } >> "${conf}"
-  fi
 
   # Validate: every address= line must use current SERVER_IP
   if grep -E '^address=/' "${conf}" | grep -vq "/${ip}$"; then
@@ -301,7 +321,6 @@ YAML
 
   # maps-api.py — always refresh from packaged copy when install runs via app_deploy
   cat > "${root}/scripts/maps-api.py" <<'MAPSAPI'
-#!/usr/bin/env python3
 """Minimal Maps download API for CommunityOS (Maps app only)."""
 from __future__ import annotations
 

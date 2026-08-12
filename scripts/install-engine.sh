@@ -230,9 +230,64 @@ case "${PROVIDE_DNS}" in
   *)     PROVIDE_DNS=1 ;;
 esac
 
-DOMAIN_BASE="community.home.arpa"
-DOMAIN_CHAT="chat.community.home.arpa"
-DOMAIN_AI="ai.community.home.arpa"
+# --- Domain (single source of truth: DOMAIN_BASE) ---
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/lib/domain.sh" 2>/dev/null || source "$(cd "$(dirname "$0")/.." && pwd)/lib/domain.sh"
+
+DOMAIN_BASE="${DOMAIN_BASE:-$COMMUNITYOS_DEFAULT_DOMAIN_BASE}"
+# Fresh installs prompt; existing .env DOMAIN_BASE is restored later and must not be reset.
+_domain_prompt=1
+if [[ -f "${BASE_DIR}/.env" ]] && grep -q '^DOMAIN_BASE=' "${BASE_DIR}/.env" 2>/dev/null; then
+  _domain_prompt=0
+fi
+if [[ "${_domain_prompt}" -eq 1 ]]; then
+  echo
+  echo "Domain setup:"
+  echo
+  echo "  1) Local network (.home.arpa) — recommended"
+  echo "  2) Use my own domain"
+  echo
+  read -rp "Choice [1]: " DOMAIN_CHOICE
+  DOMAIN_CHOICE="${DOMAIN_CHOICE:-1}"
+  case "${DOMAIN_CHOICE}" in
+    2)
+      echo
+      echo "Enter your base domain (CommunityOS derives all service hostnames from it)."
+      echo "Example: community.example.com"
+      echo
+      while true; do
+        read -rp "Base domain: " CUSTOM_DOMAIN
+        CUSTOM_DOMAIN="$(domain_normalize "${CUSTOM_DOMAIN}")"
+        if domain_validate "${CUSTOM_DOMAIN}"; then
+          DOMAIN_BASE="${CUSTOM_DOMAIN}"
+          break
+        fi
+        echo "Invalid domain. Use a hostname like community.example.com (no spaces, no IP)."
+      done
+      echo
+      echo "Service hostnames will be:"
+      domain_derive
+      echo "  Website    https://${DOMAIN_BASE}"
+      echo "  Chat       https://${DOMAIN_CHAT}"
+      echo "  Assistant  https://${DOMAIN_AI}"
+      echo "  (optional apps: library/maps/media/files/stream/hermes under the same base)"
+      echo
+      if domain_is_home_arpa "${DOMAIN_BASE}"; then
+        :
+      else
+        echo "Note: CommunityOS does not control public DNS for ${DOMAIN_BASE}."
+        echo "Ensure this name (and the derived hostnames) resolve to ${SERVER_IP}"
+        echo "on your LAN (router DNS, Pi-hole, /etc/hosts, or CommunityOS DNS if enabled)."
+        echo "A custom domain does not require public Internet exposure."
+        echo
+      fi
+      ;;
+    *)
+      DOMAIN_BASE="$COMMUNITYOS_DEFAULT_DOMAIN_BASE"
+      ;;
+  esac
+fi
+domain_derive
 ADMIN_EMAIL="admin@${DOMAIN_BASE}"
 
 # Reuse secrets from an existing install when present (avoids WP/DB password drift).
@@ -243,9 +298,9 @@ if [[ -f "${BASE_DIR}/.env" ]]; then
   _keep_community_name="${COMMUNITY_NAME}"
   _keep_admin_user="${ADMIN_USER}"
   _keep_admin_pass="${ADMIN_PASS}"
+  # Domain: on fresh install keep the prompted DOMAIN_BASE; on upgrade keep .env value
   _keep_domain_base="${DOMAIN_BASE}"
-  _keep_domain_chat="${DOMAIN_CHAT}"
-  _keep_domain_ai="${DOMAIN_AI}"
+  _session_domain_prompt="${_domain_prompt:-1}"
   set -a
   # shellcheck disable=SC1090
   source "${BASE_DIR}/.env" 2>/dev/null || true
@@ -255,11 +310,16 @@ if [[ -f "${BASE_DIR}/.env" ]]; then
   COMMUNITY_NAME="${_keep_community_name}"
   ADMIN_USER="${_keep_admin_user}"
   ADMIN_PASS="${_keep_admin_pass}"
-  DOMAIN_BASE="${_keep_domain_base}"
-  DOMAIN_CHAT="${_keep_domain_chat}"
-  DOMAIN_AI="${_keep_domain_ai}"
+  if [[ "${_session_domain_prompt}" -eq 1 ]]; then
+    # Fresh domain choice from this session
+    DOMAIN_BASE="${_keep_domain_base}"
+  else
+    # Existing install: DOMAIN_BASE already loaded from .env (must not reset)
+    DOMAIN_BASE="${DOMAIN_BASE:-$COMMUNITYOS_DEFAULT_DOMAIN_BASE}"
+  fi
+  domain_derive
   unset _keep_server_ip _keep_provide_dns _keep_community_name _keep_admin_user _keep_admin_pass
-  unset _keep_domain_base _keep_domain_chat _keep_domain_ai
+  unset _keep_domain_base _session_domain_prompt
 fi
 WEBUI_SECRET_KEY="${WEBUI_SECRET_KEY:-$(python3 -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())' 2>/dev/null || openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')}"
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-$(openssl rand -hex 12)}"
@@ -313,27 +373,27 @@ restore_host_resolver() {
       echo "       Leaving temporary public DNS so the host can still reach the internet."
       return 0
     fi
-    # Functional check: dnsmasq must actually answer community.home.arpa
+    # Functional check: dnsmasq must answer DOMAIN_BASE
     ans=""
     if command -v dig >/dev/null 2>&1; then
-      ans="$(dig +time=2 +tries=1 +short @127.0.0.1 community.home.arpa A 2>/dev/null | head -1 || true)"
+      ans="$(dig +time=2 +tries=1 +short @127.0.0.1 "${DOMAIN_BASE}" A 2>/dev/null | head -1 || true)"
     fi
     if [[ -z "${ans}" ]]; then
-      ans="$(getent hosts community.home.arpa 2>/dev/null | awk '{print $1; exit}' || true)"
+      ans="$(getent hosts "${DOMAIN_BASE}" 2>/dev/null | awk '{print $1; exit}' || true)"
     fi
     # dig @127.0.0.1 may fail if host still uses public DNS; query the published LAN port via dig @SERVER_IP
     if [[ -z "${ans}" ]] && command -v dig >/dev/null 2>&1 && [[ -n "${SERVER_IP:-}" ]]; then
-      ans="$(dig +time=2 +tries=1 +short @"${SERVER_IP}" community.home.arpa A 2>/dev/null | head -1 || true)"
+      ans="$(dig +time=2 +tries=1 +short @"${SERVER_IP}" "${DOMAIN_BASE}" A 2>/dev/null | head -1 || true)"
     fi
     if [[ -z "${ans}" ]]; then
       # Last resort: docker exec dig/nslookup not available; use dockerized query via getent from a temp container is heavy —
       # try connecting to UDP 53 and parsing dnsmasq via host command
       if command -v host >/dev/null 2>&1 && [[ -n "${SERVER_IP:-}" ]]; then
-        ans="$(host -W 2 community.home.arpa "${SERVER_IP}" 2>/dev/null | awk '/has address/{print $4; exit}' || true)"
+        ans="$(host -W 2 "${DOMAIN_BASE}" "${SERVER_IP}" 2>/dev/null | awk '/has address/{print $4; exit}' || true)"
       fi
     fi
     if [[ -z "${ans}" ]]; then
-      echo "[WARN] CommunityOS DNS is running but did not answer community.home.arpa yet."
+      echo "[WARN] CommunityOS DNS is running but did not answer ${DOMAIN_BASE} yet."
       echo "       Not rewriting host resolver to 127.0.0.1 (avoids breaking outbound DNS)."
       return 0
     fi
@@ -351,11 +411,11 @@ restore_host_resolver() {
       "nameserver 127.0.0.1" \
       > /etc/resolv.conf
 
-    if getent hosts community.home.arpa >/dev/null 2>&1; then
+    if getent hosts "${DOMAIN_BASE}" >/dev/null 2>&1; then
       echo "[ OK ] Host resolver configured to use CommunityOS DNS (127.0.0.1)"
-      echo "       community.home.arpa → $(getent hosts community.home.arpa | awk '{print $1; exit}')"
+      echo "       ${DOMAIN_BASE} → $(getent hosts "${DOMAIN_BASE}" | awk '{print $1; exit}')"
     else
-      echo "[WARN] Wrote nameserver 127.0.0.1 but host still cannot resolve community.home.arpa"
+      echo "[WARN] Wrote nameserver 127.0.0.1 but host still cannot resolve ${DOMAIN_BASE}"
     fi
     return 0
   fi
@@ -506,6 +566,12 @@ COMMUNITY_NAME=$(_q "${COMMUNITY_NAME}")
 DOMAIN_BASE=$(_q "${DOMAIN_BASE}")
 DOMAIN_CHAT=$(_q "${DOMAIN_CHAT}")
 DOMAIN_AI=$(_q "${DOMAIN_AI}")
+DOMAIN_LIBRARY=$(_q "${DOMAIN_LIBRARY}")
+DOMAIN_MAPS=$(_q "${DOMAIN_MAPS}")
+DOMAIN_MEDIA=$(_q "${DOMAIN_MEDIA}")
+DOMAIN_FILES=$(_q "${DOMAIN_FILES}")
+DOMAIN_STREAM=$(_q "${DOMAIN_STREAM}")
+DOMAIN_HERMES=$(_q "${DOMAIN_HERMES}")
 ADMIN_USER=$(_q "${ADMIN_USER}")
 ADMIN_PASS=$(_q "${ADMIN_PASS}")
 ADMIN_EMAIL=$(_q "${ADMIN_EMAIL}")
@@ -550,21 +616,15 @@ JSON
 
 # DNS
 mkdir -p "${BASE_DIR}/runtime"
-cat > "${BASE_DIR}/runtime/dnsmasq.conf" <<DNS
-# CommunityOS LAN DNS
-domain-needed
-bogus-priv
-no-resolv
-server=1.1.1.1
-server=8.8.8.8
-address=/community.home.arpa/${SERVER_IP}
-address=/library.community.home.arpa/${SERVER_IP}
-address=/maps.community.home.arpa/${SERVER_IP}
-address=/media.community.home.arpa/${SERVER_IP}
-address=/files.community.home.arpa/${SERVER_IP}
-address=/stream.community.home.arpa/${SERVER_IP}
-address=/hermes.community.home.arpa/${SERVER_IP}
-DNS
+{
+  echo "# CommunityOS LAN DNS — DOMAIN_BASE=${DOMAIN_BASE}"
+  echo "domain-needed"
+  echo "bogus-priv"
+  echo "no-resolv"
+  echo "server=1.1.1.1"
+  echo "server=8.8.8.8"
+  domain_dnsmasq_addresses "${SERVER_IP}"
+} > "${BASE_DIR}/runtime/dnsmasq.conf"
 
 echo "Starting CommunityOS (this may take several minutes)..."
 
@@ -623,7 +683,7 @@ elif [[ "${PROVIDE_DNS}" -eq 0 ]]; then pass "DNS (disabled by choice)"
 else fail "DNS"; fi
 
 if docker exec communityos-wordpress bash -c 'exec 3<>/dev/tcp/127.0.0.1/80' >/dev/null 2>&1 \
-   || curl -fsS --connect-timeout 3 -H "Host: community.home.arpa" http://127.0.0.1/ >/dev/null 2>&1; then
+   || curl -fsS --connect-timeout 3 -H "Host: ${DOMAIN_BASE}" http://127.0.0.1/ >/dev/null 2>&1; then
   pass "Website"
 else
   fail "Website"
@@ -674,7 +734,7 @@ if [[ "${PROVIDE_DNS}" -eq 1 ]]; then
   echo
   echo "2. Reconnect your devices so they pick up the new DNS."
   echo
-  echo "   If community.home.arpa does not resolve:"
+  echo "   If ${DOMAIN_BASE} does not resolve:"
   echo
   echo "      • Disconnect and reconnect Wi-Fi"
   echo "      • OR unplug/reconnect the Ethernet cable"
@@ -691,9 +751,9 @@ else
   echo
   echo "      • Add to each client /etc/hosts (or equivalent):"
   echo
-  echo "          ${SERVER_IP}  community.home.arpa"
-  echo "          ${SERVER_IP}  chat.community.home.arpa"
-  echo "          ${SERVER_IP}  ai.community.home.arpa"
+  echo "          ${SERVER_IP}  ${DOMAIN_BASE}"
+  echo "          ${SERVER_IP}  ${DOMAIN_CHAT}"
+  echo "          ${SERVER_IP}  ${DOMAIN_AI}"
   echo
   echo "      • Or create the same records in Pi-hole / AdGuard / router DNS."
   echo
@@ -702,17 +762,17 @@ else
   _step_https=4
 fi
 echo
-echo "      http://community.home.arpa"
+echo "      http://${DOMAIN_BASE}"
 echo
 echo "${_step_cert}. Install the CommunityOS certificate (one CA for all services)."
 echo "   Download it from the welcome page, or:"
-echo "      http://community.home.arpa/ca.crt"
+echo "      http://${DOMAIN_BASE}/ca.crt"
 echo
 echo "${_step_https}. Then use HTTPS (same certificate covers every CommunityOS name):"
 echo
-echo "      https://community.home.arpa"
-echo "      https://chat.community.home.arpa"
-echo "      https://ai.community.home.arpa"
+echo "      https://${DOMAIN_BASE}"
+echo "      https://${DOMAIN_CHAT}"
+echo "      https://${DOMAIN_AI}"
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
@@ -731,10 +791,10 @@ else
       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsutils 2>/dev/null || true
     fi
     if command -v dig >/dev/null 2>&1; then
-      ans="$(dig +time=2 +tries=1 +short @"${SERVER_IP}" community.home.arpa A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+      ans="$(dig +time=2 +tries=1 +short @"${SERVER_IP}" "${DOMAIN_BASE}" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
       if is_ipv4 "${ans}"; then
-        echo "  ✓ community.home.arpa → ${ans}"
-        for name in chat.community.home.arpa ai.community.home.arpa; do
+        echo "  ✓ ${DOMAIN_BASE} → ${ans}"
+        for name in "${DOMAIN_CHAT}" "${DOMAIN_AI}"; do
           a2="$(dig +time=2 +tries=1 +short @"${SERVER_IP}" "${name}" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
           if is_ipv4 "${a2}"; then
             echo "  ✓ ${name} → ${a2}"
@@ -744,7 +804,7 @@ else
         done
         dns_verify_ok=1
       else
-        echo "  ✗ community.home.arpa did not resolve via ${SERVER_IP}"
+        echo "  ✗ ${DOMAIN_BASE} did not resolve via ${SERVER_IP}"
         if [[ -n "${ans}" ]]; then
           echo "      dig returned: ${ans}"
         fi
@@ -760,7 +820,7 @@ else
   if [[ "${dns_verify_ok}" -eq 1 ]]; then
     echo "Server-side DNS looks good."
     echo
-    echo "If another device cannot resolve community.home.arpa:"
+    echo "If another device cannot resolve ${DOMAIN_BASE}:"
     echo "  • Disconnect and reconnect Wi-Fi"
     echo "  • OR unplug/reconnect Ethernet"
     echo "  • OR renew the DHCP lease"
@@ -778,7 +838,7 @@ else
   echo
   echo "From another device run:"
   echo
-  echo "  dig community.home.arpa"
+  echo "  dig ${DOMAIN_BASE}"
   echo
   echo "Expected answer:"
   echo

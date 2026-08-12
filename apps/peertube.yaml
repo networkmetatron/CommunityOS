@@ -27,7 +27,7 @@ services:
       PEERTUBE_DB_SSL: "false"
       PEERTUBE_REDIS_HOSTNAME: peertube-redis
       PEERTUBE_REDIS_PORT: "6379"
-      PEERTUBE_WEBSERVER_HOSTNAME: stream.community.home.arpa
+      PEERTUBE_WEBSERVER_HOSTNAME: ${DOMAIN_STREAM:-stream.${DOMAIN_BASE:-community.home.arpa}}
       PEERTUBE_WEBSERVER_PORT: "443"
       PEERTUBE_WEBSERVER_HTTPS: "true"
       PEERTUBE_SECRET: ${PEERTUBE_SECRET}
@@ -36,7 +36,7 @@ services:
       # Email optional on LAN; leave SMTP unset for local-first use
       PEERTUBE_SMTP_HOSTNAME: ""
       PEERTUBE_SMTP_PORT: "25"
-      PEERTUBE_SMTP_FROM: noreply@stream.community.home.arpa
+      PEERTUBE_SMTP_FROM: noreply@${DOMAIN_STREAM:-stream.${DOMAIN_BASE:-community.home.arpa}}
       PEERTUBE_SMTP_TLS: "false"
       PEERTUBE_SMTP_DISABLE_STARTTLS: "true"
     volumes:

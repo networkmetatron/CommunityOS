@@ -15,10 +15,10 @@ services:
       MYSQL_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
       NEXTCLOUD_ADMIN_USER: ${ADMIN_USER}
       NEXTCLOUD_ADMIN_PASSWORD: ${ADMIN_PASS}
-      NEXTCLOUD_TRUSTED_DOMAINS: files.community.home.arpa
+      NEXTCLOUD_TRUSTED_DOMAINS: ${DOMAIN_FILES:-files.${DOMAIN_BASE:-community.home.arpa}}
       OVERWRITEPROTOCOL: https
-      OVERWRITEHOST: files.community.home.arpa
-      OVERWRITECLIURL: https://files.community.home.arpa
+      OVERWRITEHOST: ${DOMAIN_FILES:-files.${DOMAIN_BASE:-community.home.arpa}}
+      OVERWRITECLIURL: https://${DOMAIN_FILES:-files.${DOMAIN_BASE:-community.home.arpa}}
     volumes:
       - ./data/nextcloud:/var/www/html
     healthcheck:
