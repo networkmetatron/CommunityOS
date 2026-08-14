@@ -1,0 +1,139 @@
+{
+	# One local CA for every CommunityOS hostname.
+	# Users install the CA once from http://$DOMAIN_BASE/ca.crt
+	local_certs
+}
+
+# First-run / certificate onboarding (plain HTTP)
+http://{$DOMAIN_BASE} {
+	handle /ca.crt {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		file_server
+	}
+	handle {
+		root * /srv/welcome
+		file_server
+	}
+}
+
+# Core services
+{$DOMAIN_BASE} {
+	encode gzip
+	tls internal
+	reverse_proxy wordpress:80
+}
+
+{$DOMAIN_CHAT} {
+	encode gzip
+	tls internal
+	handle /.well-known/matrix/server {
+		header Content-Type application/json
+		header Access-Control-Allow-Origin *
+		respond `{"m.server":"{$DOMAIN_CHAT}:443"}`
+	}
+	handle /.well-known/matrix/client {
+		header Content-Type application/json
+		header Access-Control-Allow-Origin *
+		respond `{"m.homeserver":{"base_url":"https://{$DOMAIN_CHAT}"},"m.identity_server":{"base_url":""}}`
+	}
+	handle /_matrix/* {
+		reverse_proxy synapse:8008
+	}
+	handle /_synapse/* {
+		reverse_proxy synapse:8008
+	}
+	handle {
+		reverse_proxy element-web:80
+	}
+}
+
+{$DOMAIN_AI} {
+	encode gzip
+	tls internal
+	reverse_proxy open-webui:8080
+}
+
+# Optional apps — hostnames from DOMAIN_* (derived from DOMAIN_BASE)
+{$DOMAIN_LIBRARY} {
+	encode gzip
+	tls internal
+	handle {
+		reverse_proxy kiwix:8080
+	}
+	handle_errors {
+		rewrite * /library.html
+		root * /srv/apps-missing
+		file_server
+	}
+}
+
+{$DOMAIN_MAPS} {
+	encode gzip
+	tls internal
+	handle /tiles/* {
+		uri strip_prefix /tiles
+		reverse_proxy martin:3000
+	}
+	handle /maps-api/* {
+		uri strip_prefix /maps-api
+		reverse_proxy maps-api:8099
+	}
+	handle {
+		root * /srv/maps
+		file_server
+	}
+}
+
+{$DOMAIN_MEDIA} {
+	encode gzip
+	tls internal
+	handle {
+		reverse_proxy jellyfin:8096
+	}
+	handle_errors {
+		rewrite * /media.html
+		root * /srv/apps-missing
+		file_server
+	}
+}
+
+{$DOMAIN_FILES} {
+	encode gzip
+	tls internal
+	handle {
+		reverse_proxy nextcloud:80
+	}
+	handle_errors {
+		rewrite * /files.html
+		root * /srv/apps-missing
+		file_server
+	}
+}
+
+{$DOMAIN_STREAM} {
+	encode gzip
+	tls internal
+	handle {
+		reverse_proxy peertube:9000
+	}
+	handle_errors {
+		rewrite * /stream.html
+		root * /srv/apps-missing
+		file_server
+	}
+}
+
+{$DOMAIN_HERMES} {
+	encode gzip
+	tls internal
+	handle {
+		reverse_proxy hermes:9119
+	}
+	handle_errors {
+		rewrite * /hermes.html
+		root * /srv
+		file_server
+		header Content-Type text/html
+	}
+}

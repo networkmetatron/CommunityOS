@@ -1,0 +1,15 @@
+id: nextcloud
+name: Files
+description: Personal and shared file storage (Nextcloud)
+url: https://files.community.home.arpa
+domain: files.community.home.arpa
+compose: apps/nextcloud.yaml
+container: communityos-nextcloud
+data: /opt/communityos/data/nextcloud
+requires:
+  - caddy
+  - mariadb
+# Offline redistribution of upstream Docker images (package-offline.sh).
+# false/absent = admin must supply images for air-gapped optional-app install.
+# true = only when redistribution is verified/approved for CommunityOS bundles.
+redistribute_offline: false

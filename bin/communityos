@@ -1,0 +1,4591 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prefer the repository directory when running from a Git working tree.
+# Otherwise use the installed CommunityOS location.
+
+SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ -f "${SCRIPT_ROOT}/compose.yaml" && -f "${SCRIPT_ROOT}/VERSION" ]]; then
+  export COMMUNITYOS_ROOT="${SCRIPT_ROOT}"
+else
+  export COMMUNITYOS_ROOT=/opt/communityos
+fi
+
+# shellcheck source=/dev/null
+source "${COMMUNITYOS_ROOT}/lib/common.sh" 2>/dev/null || source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
+
+communityos_version() {
+    if [[ -f "${COMMUNITYOS_ROOT}/VERSION" ]]; then
+        cat "${COMMUNITYOS_ROOT}/VERSION"
+    else
+        echo "unknown"
+    fi
+}
+
+usage() {
+  cat <<'USAGE'
+CommunityOS
+
+Usage:
+  communityos <command>
+
+Setup
+-----
+  install     Install CommunityOS
+  update      Update platform components
+  uninstall   Remove CommunityOS
+
+Operations
+----------
+  start       Start CommunityOS
+  stop        Stop CommunityOS
+  restart     Restart CommunityOS
+  status      Show platform dashboard
+  domain      Show or change DOMAIN_BASE
+  tls         Certificate mode (local CA | ACME DNS-01)
+  service     Enable/disable core services (website, chat, ai)
+
+Protection
+----------
+  backup      Backup CommunityOS data
+  restore     Restore from a backup
+
+Apps
+----
+  apps        List optional apps
+  app         Install/remove optional apps
+
+Chat
+----
+  matrix      Chat invitations and optional federation (off|private|public)
+
+Maps
+----
+  maps        Download / list offline map datasets
+
+Maintenance
+-----------
+  doctor      Run health checks
+  health      Alias for doctor
+  logs        View platform logs
+
+Information
+-----------
+  info        How to connect (URLs, certificate, DNS)
+  version     Show version
+  help        Show this help
+USAGE
+}
+
+
+
+cmd_info() {
+  ensure_installed 2>/dev/null || true
+
+  local ver
+  ver="$(communityos_version)"
+
+  local domain_base="${DOMAIN_BASE:-community.home.arpa}"
+  local domain_chat="${DOMAIN_CHAT:-chat.${domain_base}}"
+  local domain_ai="${DOMAIN_AI:-ai.${domain_base}}"
+  local server_ip="" community_name="" provide_dns="0"
+
+  if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    if declare -F load_env >/dev/null 2>&1; then
+      load_env
+    else
+      set -a
+      # shellcheck disable=SC1090
+      source "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+      set +a
+    fi
+    domain_base="${DOMAIN_BASE:-$domain_base}"
+    domain_chat="${DOMAIN_CHAT:-chat.${domain_base}}"
+    domain_ai="${DOMAIN_AI:-ai.${domain_base}}"
+    domain_chat="${DOMAIN_CHAT:-$domain_chat}"
+    domain_ai="${DOMAIN_AI:-$domain_ai}"
+    server_ip="${SERVER_IP:-}"
+    community_name="${COMMUNITY_NAME:-}"
+    provide_dns="${PROVIDE_DNS:-0}"
+    ADMIN_USER="${ADMIN_USER:-admin}"
+    ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+  fi
+  # strip quotes if present from quoted .env values
+  server_ip="${server_ip%\'}"
+  server_ip="${server_ip#\'}"
+  community_name="${community_name%\'}"
+  community_name="${community_name#\'}"
+  domain_base="${domain_base%\'}"
+  domain_base="${domain_base#\'}"
+  domain_chat="${domain_chat%\'}"
+  domain_chat="${domain_chat#\'}"
+  domain_ai="${domain_ai%\'}"
+  domain_ai="${domain_ai#\'}"
+  provide_dns="${provide_dns%\'}"
+  provide_dns="${provide_dns#\'}"
+
+  ADMIN_USER="${ADMIN_USER:-admin}"
+  if [[ -z "${ADMIN_EMAIL}" ]]; then
+    ADMIN_EMAIL="admin@${domain_base}"
+  fi
+  if [[ -z "${server_ip}" ]]; then
+    server_ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+  fi
+
+  _up() {
+    docker inspect --format='{{.State.Status}}' "$1" 2>/dev/null | grep -qi running
+  }
+
+  echo
+  echo "CommunityOS ${ver}"
+  if [[ -n "${community_name}" ]]; then
+    echo "Community: ${community_name}"
+  fi
+  echo
+  echo "Welcome"
+  echo
+  echo "  http://${domain_base}"
+  echo
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/tls.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/tls.sh" 2>/dev/null || true
+  local _tls_mode="local"
+  if declare -F tls_mode_get >/dev/null 2>&1; then
+    _tls_mode="$(tls_mode_get)"
+  fi
+  if [[ "${_tls_mode}" == "local" ]]; then
+    echo "  First time?"
+    echo "  Download the CommunityOS CA certificate here."
+    echo
+    echo "Certificate"
+    echo
+    echo "  Mode: CommunityOS local CA"
+    echo "  Download CA:"
+    echo "    http://${domain_base}/ca.crt"
+    echo
+    echo "  One CommunityOS CA secures every service."
+    echo
+  else
+    echo "Certificate"
+    echo
+    echo "  Mode: public (Let's Encrypt via ACME DNS-01)"
+    echo "  Ordinary browsers trust these certificates — no CA install required."
+    echo
+  fi
+  echo "Administrator"
+  echo
+  echo "  Username:"
+  echo "    ${ADMIN_USER:-admin}"
+  echo
+  echo "  Email:"
+  echo "    ${ADMIN_EMAIL:-admin@${domain_base}}"
+  echo
+  echo "  Password:"
+  echo "    (the password chosen during installation)"
+  echo
+  echo "  This administrator identity is used across CommunityOS services where supported."
+  echo
+  echo "Access"
+  echo
+  echo "  Website:"
+  echo "    https://${domain_base}"
+  echo
+  echo "  Chat:"
+  echo "    https://${domain_chat}"
+  echo
+  echo "  Assistant:"
+  echo "    https://${domain_ai}"
+  echo
+  echo "  Ollama:"
+  echo "    http://127.0.0.1:11434"
+  echo
+  echo "  Models:"
+  echo "    None installed by default."
+  echo "    Download a model in the Assistant UI, or on the server:"
+  echo "      sudo docker exec -it communityos-ollama ollama pull <model>"
+  echo "    Example:  ollama pull llama3.2"
+
+  # Optional apps (installed only)
+  # shellcheck source=/dev/null
+  source "${COMMUNITYOS_ROOT}/lib/apps.sh" 2>/dev/null || true
+  if declare -F app_list_ids >/dev/null 2>&1; then
+    local id name url any=0
+    while IFS= read -r id; do
+      [[ -z "${id}" ]] && continue
+      [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/${id}.enabled" ]] || continue
+      name="$(app_meta "${id}" name 2>/dev/null || echo "${id}")"
+      url="$(app_meta "${id}" url 2>/dev/null || true)"
+      [[ -z "${url}" ]] && url="https://$(app_meta "${id}" domain 2>/dev/null || echo "")"
+      if [[ -n "${url}" && "${url}" != "https://" ]]; then
+        if [[ "${any}" -eq 0 ]]; then
+          echo
+          any=1
+        fi
+        echo "  ${name}:"
+        echo "    ${url}"
+        echo
+      fi
+    done < <(app_list_ids)
+  fi
+
+  echo "Server"
+  echo
+  echo "  LAN IP:"
+  echo "    ${server_ip:-unknown}"
+  echo
+  if [[ "${provide_dns}" == "1" ]]; then
+    echo "  DNS:"
+    echo "    Enabled"
+    echo
+    echo "  Configure your router to advertise:"
+    echo
+    echo "    ${server_ip:-unknown}"
+  else
+    echo "  DNS:"
+    echo "    Disabled"
+    echo
+    echo "  Access services by IP or your existing DNS."
+  fi
+  echo
+  echo "Status"
+  echo
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    if [[ "${provide_dns}" == "1" ]]; then
+      if _up communityos-dns; then echo "  DNS:        running"; else echo "  DNS:        down"; fi
+    else
+      echo "  DNS:        disabled"
+    fi
+    if _up communityos-caddy; then echo "  HTTPS:      gateway up"; else echo "  HTTPS:      gateway down"; fi
+    if _up communityos-wordpress; then echo "  Website:    up"; else echo "  Website:    down"; fi
+    if _up communityos-synapse && _up communityos-element; then echo "  Chat:       up"; else echo "  Chat:       down"; fi
+    if _up communityos-open-webui; then echo "  Assistant:  up"; else echo "  Assistant:  down"; fi
+    if _up communityos-ollama; then echo "  Ollama:     up"; else echo "  Ollama:     down"; fi
+  else
+    echo "  (Docker not available in this shell — try: sudo communityos info)"
+  fi
+  echo
+  echo "Paths"
+  echo
+  echo "  Install:"
+  echo "    ${COMMUNITYOS_ROOT}"
+  echo
+  echo "  Backups:"
+  echo "    ${COMMUNITYOS_ROOT}/backups"
+  echo
+}
+
+cmd_version() {
+  communityos_version
+}
+
+cmd_status() {
+  ensure_installed
+
+  local ver
+  ver="$(communityos_version)"
+
+  local server_ip="" provide_dns="0"
+  if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    load_env 2>/dev/null || true
+    server_ip="${SERVER_IP:-}"
+    provide_dns="${PROVIDE_DNS:-0}"
+  fi
+  if [[ -z "${server_ip}" ]]; then
+    server_ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+  fi
+
+  _svc_up() {
+    # $1 = container name
+    docker inspect --format='{{.State.Status}}' "$1" 2>/dev/null | grep -qi running
+  }
+
+  _mark() {
+    if "$1"; then echo "✓"; else echo "○"; fi
+  }
+
+  echo
+  echo "CommunityOS ${ver}"
+  echo
+
+  # Only show core stacks that are selected/enabled
+  _status_on() {
+    local id="$1"
+    if declare -F service_is_enabled >/dev/null 2>&1; then
+      service_is_enabled "${id}"
+      return $?
+    fi
+    if [[ -f "${COMMUNITYOS_ROOT}/runtime/services/${id}.enabled" ]]; then
+      return 0
+    fi
+    if [[ -d "${COMMUNITYOS_ROOT}/runtime/services" ]] \
+       && compgen -G "${COMMUNITYOS_ROOT}/runtime/services/*.enabled" >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  }
+
+  echo "Core"
+  echo
+  if _status_on website; then
+    if _svc_up communityos-wordpress; then echo "  ✓ Website"; else echo "  ! Website (enabled, not running)"; fi
+  fi
+  if _status_on chat; then
+    if _svc_up communityos-synapse && _svc_up communityos-element; then
+      echo "  ✓ Chat"
+    else
+      echo "  ! Chat (enabled, not running)"
+    fi
+  fi
+  if ! _status_on website && ! _status_on chat; then
+    echo "  · (no Website/Chat selected — see: communityos service)"
+  fi
+  echo
+
+  if _status_on ai; then
+    echo "AI"
+    echo
+    if _svc_up communityos-open-webui; then echo "  ✓ Open WebUI"; else echo "  ! Open WebUI (enabled, not running)"; fi
+    if _svc_up communityos-ollama; then echo "  ✓ Ollama"; else echo "  ! Ollama (enabled, not running)"; fi
+    _models=0
+    if _svc_up communityos-ollama; then
+      _models="$(docker exec communityos-ollama ollama list 2>/dev/null | awk 'NR>1 && NF{c++} END{print c+0}' || echo 0)"
+    fi
+    if [[ "${_models}" -gt 0 ]]; then
+      echo "  ✓ Models installed (${_models})"
+    else
+      echo "  · Models installed (none yet)"
+    fi
+    echo
+  fi
+
+  echo "Infrastructure"
+  echo
+  if [[ "${provide_dns}" == "1" ]] || [[ "${provide_dns}" == "'1'" ]]; then
+    if _svc_up communityos-dns; then echo "  ✓ DNS"; else echo "  ○ DNS"; fi
+  else
+    echo "  · DNS (not enabled — managed outside CommunityOS)"
+  fi
+  if _svc_up communityos-caddy; then
+    echo "  ✓ Gateway"
+    echo "  ✓ Caddy"
+  else
+    echo "  ○ Gateway"
+    echo "  ○ Caddy"
+  fi
+  echo
+
+  echo "Optional Apps"
+  echo
+  # shellcheck source=/dev/null
+  source "${COMMUNITYOS_ROOT}/lib/apps.sh" 2>/dev/null || true
+  local id name ctn _any_app=0
+  if declare -F app_list_ids >/dev/null 2>&1; then
+    while IFS= read -r id; do
+      [[ -z "${id}" ]] && continue
+      [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/${id}.enabled" ]] || continue
+      _any_app=1
+      name="$(app_meta "${id}" name 2>/dev/null || echo "${id}")"
+      ctn="$(app_meta "${id}" container 2>/dev/null || true)"
+      if [[ -n "${ctn}" ]] && _svc_up "${ctn}"; then
+        echo "  ✓ ${name}"
+      else
+        echo "  ! ${name} (enabled, not running)"
+      fi
+    done < <(app_list_ids)
+    if [[ "${_any_app}" -eq 0 ]]; then
+      echo "  · none installed — communityos app list"
+    fi
+  else
+    for pair in "kiwix:Library:communityos-kiwix" "maps:Maps:communityos-martin" "jellyfin:Media:communityos-jellyfin" "nextcloud:Files:communityos-nextcloud" "peertube:Streaming:communityos-peertube"; do
+      id="${pair%%:*}"
+      rest="${pair#*:}"
+      name="${rest%%:*}"
+      ctn="${rest##*:}"
+      if [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/${id}.enabled" ]]; then
+        if _svc_up "${ctn}"; then echo "  ✓ ${name}"; else echo "  ! ${name} (enabled, not running)"; fi
+      else
+        echo "  ○ ${name}"
+      fi
+    done
+  fi
+  echo
+
+  echo "Certificates"
+  echo
+  # Prefer the live leaf certificate (matches doctor / openssl). Fall back to TLS_MODE.
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/tls.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/tls.sh" 2>/dev/null || true
+  _st_tls="local"
+  if declare -F tls_mode_get >/dev/null 2>&1; then
+    _st_tls="$(tls_mode_get)"
+  elif [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    _st_tls="$(grep -E '^TLS_MODE=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' || true)"
+    case "${_st_tls}" in acme*|letsencrypt|public|le) _st_tls="acme_dns01" ;; *) _st_tls="local" ;; esac
+  fi
+  _st_iss=""
+  _st_end=""
+  _st_base="${DOMAIN_BASE:-}"
+  if [[ -z "${_st_base}" && -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    _st_base="$(grep -E '^DOMAIN_BASE=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+  fi
+  if _svc_up communityos-caddy && [[ -n "${_st_base}" ]]; then
+    _st_raw="$(echo | openssl s_client -connect "${_st_base}:443" -servername "${_st_base}" 2>/dev/null \
+      | openssl x509 -noout -issuer -enddate 2>/dev/null || true)"
+    _st_iss="$(echo "${_st_raw}" | awk -F'issuer=' '/issuer=/ {print $2; exit}')"
+    _st_end="$(echo "${_st_raw}" | awk -F'notAfter=' '/notAfter=/ {print $2; exit}')"
+  fi
+
+  if ! _svc_up communityos-caddy; then
+    echo "  ○ Gateway not running"
+  elif echo "${_st_iss}" | grep -qiE "Let's Encrypt|ISRG"; then
+    # Live public cert wins even if TLS_MODE were mis-read
+    echo "  ✓ Let's Encrypt public certificate"
+    [[ -n "${_st_end}" ]] && echo "      Expires: ${_st_end}"
+    echo "      Issuer: ${_st_iss}"
+    if [[ "${_st_tls}" == "acme_dns01" ]]; then
+      _st_prov="Cloudflare DNS-01"
+      if declare -F tls_load_secrets >/dev/null 2>&1; then
+        tls_load_secrets 2>/dev/null || true
+        [[ -n "${ACME_DNS_PROVIDER:-}" ]] && _st_prov="${ACME_DNS_PROVIDER} DNS-01"
+      fi
+      echo "      Provider: ${_st_prov}"
+    fi
+    echo "      Client trust: public CA (no ca.crt install)"
+  elif [[ "${_st_tls}" == "acme_dns01" ]]; then
+    echo "  · Public ACME mode (Let's Encrypt / DNS-01) — certificate still provisioning"
+    [[ -n "${_st_iss}" ]] && echo "      current issuer: ${_st_iss}"
+    echo "      re-check: sudo communityos tls prewarm"
+  else
+    if docker exec communityos-caddy test -f /data/caddy/pki/authorities/local/root.crt 2>/dev/null; then
+      echo "  ✓ CommunityOS CA"
+    else
+      echo "  ○ CommunityOS CA (not issued yet — open http://${_st_base:-community.home.arpa} once)"
+    fi
+    echo "  ✓ Service certificates issued by local CA (tls internal)"
+  fi
+  echo
+
+  echo "Network"
+  echo
+  echo "  LAN: ${server_ip:-unknown}"
+  if [[ "${provide_dns}" == "1" ]] || [[ "${provide_dns}" == "'1'" ]]; then
+    echo "  DNS: Enabled"
+  else
+    echo "  DNS: Disabled (external)"
+  fi
+  if ping -4 -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || ping -4 -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    echo "  WAN: Connected"
+  else
+    echo "  WAN: Offline (local services should still work)"
+  fi
+  echo
+
+  echo "Storage"
+  echo
+  if [[ -d "${COMMUNITYOS_ROOT}" ]]; then
+    local avail_kb avail_h
+    avail_kb="$(df -Pk "${COMMUNITYOS_ROOT}" 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [[ -n "${avail_kb}" ]]; then
+      if command -v numfmt >/dev/null 2>&1; then
+        avail_h="$(numfmt --to=iec --suffix=B $((avail_kb * 1024)) 2>/dev/null || echo "$((avail_kb / 1024 / 1024)) GB")"
+      else
+        avail_h="$((avail_kb / 1024 / 1024)) GB"
+      fi
+      echo "  Free: ${avail_h}"
+    else
+      echo "  Free: unknown"
+    fi
+  fi
+  echo
+
+  # Optional: one-line tip
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    echo "Note: Docker not available in this shell (try: newgrp docker, or sudo communityos status)."
+    echo
+  fi
+}
+
+
+cmd_start() {
+  need_root start
+  ensure_installed
+  ensure_matrix_federation_env
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/tls.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/tls.sh" 2>/dev/null || true
+  log_info "Starting CommunityOS..."
+  # Keep LAN DNS in sync with .env SERVER_IP before containers start
+  if declare -F app_update_dns >/dev/null 2>&1; then
+    app_update_dns
+  fi
+  compose up -d
+  # DNS check runs AFTER compose up so we never warn while DNS is still starting.
+  if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+    set +a
+  fi
+  _pd="${PROVIDE_DNS:-0}"
+  case "${_pd}" in 1|true|TRUE|yes|YES|Y|y) _pd=1 ;; *) _pd=0 ;; esac
+  if [[ "${_pd}" == "1" ]]; then
+    local _i _dns_up=0
+    for _i in $(seq 1 15); do
+      if docker exec communityos-dns true >/dev/null 2>&1; then
+        _dns_up=1
+        break
+      fi
+      sleep 1
+    done
+    if [[ "${_dns_up}" -ne 1 ]]; then
+      # One explicit retry of the dns service only
+      compose up -d dns 2>/dev/null || true
+      sleep 2
+      if docker exec communityos-dns true >/dev/null 2>&1; then
+        _dns_up=1
+      fi
+    fi
+    if [[ "${_dns_up}" -ne 1 ]]; then
+      log_warn "PROVIDE_DNS=1 but communityos-dns did not become ready — check: docker ps -a --filter name=communityos-dns"
+    fi
+  fi
+  # Pre-warm TLS quietly (no transient WARN noise on ordinary start)
+  if declare -F tls_prewarm >/dev/null 2>&1; then
+    TLS_PREWARM_QUIET=1 tls_prewarm >/dev/null 2>&1 || true
+  fi
+  log_ok "CommunityOS started."
+}
+
+cmd_stop() {
+  need_root stop
+  ensure_installed
+  log_info "Stopping CommunityOS..."
+  compose stop
+  log_ok "CommunityOS stopped."
+}
+
+cmd_restart() {
+  need_root restart
+  ensure_installed
+  ensure_matrix_federation_env
+  log_info "Restarting CommunityOS..."
+  # Regenerate dnsmasq.conf from current SERVER_IP before restart
+  if declare -F app_update_dns >/dev/null 2>&1; then
+    app_update_dns
+  fi
+  compose restart
+  # Ensure DNS container picks up rewritten conf (volume-mounted)
+  if docker exec communityos-dns true >/dev/null 2>&1; then
+    docker restart communityos-dns >/dev/null 2>&1 || true
+  fi
+  log_ok "CommunityOS restarted."
+}
+
+cmd_update() {
+  need_root update
+  ensure_installed
+  ensure_matrix_federation_env
+  log_info "Updating CommunityOS..."
+  if declare -F app_update_dns >/dev/null 2>&1; then
+    app_update_dns
+  fi
+  compose pull
+  compose up -d
+  log_ok "Update complete."
+  echo
+  echo "Open:  https://${DOMAIN_BASE:-community.home.arpa}"
+}
+
+cmd_backup() {
+  need_root backup
+  ensure_installed
+  local stamp dest
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "${COMMUNITYOS_ROOT}/backups"
+  dest="${COMMUNITYOS_ROOT}/backups/communityos-${stamp}.tar"
+  log_info "Creating backup..."
+  # Config + named volume snapshots via docker
+  tar -C "${COMMUNITYOS_ROOT}" -cf "${dest}" \
+    .env Caddyfile config.json compose.yaml static 2>/dev/null || true
+  # Append volume data using temporary containers
+  for vol in caddy_data wordpress_data synapse_data open_webui_data postgres_data mariadb_data; do
+    full="communityos_${vol}"
+    if docker volume inspect "${full}" >/dev/null 2>&1; then
+      docker run --rm -v "${full}:/data:ro" -v "${COMMUNITYOS_ROOT}/backups:/backups" alpine \
+        tar -C /data -rf "/backups/communityos-${stamp}.tar" . 2>/dev/null || true
+    fi
+  done
+  gzip -f "${dest}" 2>/dev/null || true
+  log_ok "Backup saved: ${dest}.gz"
+}
+
+cmd_restore() {
+  need_root restore
+  ensure_installed
+  local archive="${1:-}"
+  if [[ -z "${archive}" ]]; then
+    echo "Usage: communityos restore <backup-file.tar.gz>"
+    echo
+    echo "Available backups:"
+    ls -1 "${COMMUNITYOS_ROOT}/backups"/communityos-*.tar.gz 2>/dev/null || echo "  (none)"
+    exit 1
+  fi
+  if [[ ! -f "${archive}" ]]; then
+    echo "File not found: ${archive}"
+    exit 1
+  fi
+  log_warn "Restore replaces current configuration files from the archive."
+  read -rp "Continue? [y/N]: " ok
+  case "${ok}" in
+    [yY]*) ;;
+    *) echo "Cancelled."; exit 0 ;;
+  esac
+  compose stop || true
+  tar -C "${COMMUNITYOS_ROOT}" -xzf "${archive}" 2>/dev/null || tar -C "${COMMUNITYOS_ROOT}" -xf "${archive}"
+  compose up -d
+  log_ok "Restore finished."
+}
+
+
+cmd_logs() {
+  ensure_installed
+  local target="${1:-}"
+  local service=""
+
+  case "${target}" in
+    ""|all)
+      compose logs --tail=100 -f
+      return
+      ;;
+    website|wordpress|wp)
+      service="wordpress"
+      ;;
+    chat|matrix|synapse)
+      service="synapse"
+      ;;
+    ai|assistant|open-webui|webui)
+      service="open-webui"
+      ;;
+    gateway|caddy|https)
+      service="caddy"
+      ;;
+    dns)
+      service="dns"
+      ;;
+    element)
+      service="element-web"
+      ;;
+    *)
+      echo "Usage: communityos logs [website|chat|ai|gateway|dns|all]"
+      exit 1
+      ;;
+  esac
+
+  compose logs --tail=100 -f "${service}"
+}
+
+cmd_doctor() {
+  echo
+  echo "CommunityOS Health Check"
+  echo "========================"
+  echo
+
+  pass() { echo "  ✓ $*"; }
+  fail() { echo "  ✗ $*"; DOCTOR_FAIL=1; }
+  DOCTOR_FAIL=0
+
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/domain.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/domain.sh" 2>/dev/null || true
+  [[ -f "${COMMUNITYOS_ROOT}/lib/apps.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/apps.sh" 2>/dev/null || true
+  load_env 2>/dev/null || true
+  if declare -F domain_load >/dev/null 2>&1; then domain_load; fi
+
+  _doctor_service_enabled() {
+    local id="$1"
+    if declare -F service_is_enabled >/dev/null 2>&1; then
+      service_is_enabled "${id}"
+      return $?
+    fi
+    if [[ -f "${COMMUNITYOS_ROOT}/runtime/services/${id}.enabled" ]]; then
+      return 0
+    fi
+    if [[ -d "${COMMUNITYOS_ROOT}/runtime/services" ]] \
+       && compgen -G "${COMMUNITYOS_ROOT}/runtime/services/*.enabled" >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  }
+
+  _doctor_dns_names() {
+    local names=()
+    if _doctor_service_enabled website; then
+      names+=("${DOMAIN_BASE:-community.home.arpa}")
+    fi
+    if _doctor_service_enabled chat; then
+      names+=("${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}")
+    fi
+    if _doctor_service_enabled ai; then
+      names+=("${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}")
+    fi
+    # Optional apps (only when enabled)
+    [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/kiwix.enabled" ]] && names+=("${DOMAIN_LIBRARY:-library.${DOMAIN_BASE:-community.home.arpa}}")
+    [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/maps.enabled" ]] && names+=("${DOMAIN_MAPS:-maps.${DOMAIN_BASE:-community.home.arpa}}")
+    [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/jellyfin.enabled" ]] && names+=("${DOMAIN_MEDIA:-media.${DOMAIN_BASE:-community.home.arpa}}")
+    [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/nextcloud.enabled" ]] && names+=("${DOMAIN_FILES:-files.${DOMAIN_BASE:-community.home.arpa}}")
+    [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/peertube.enabled" ]] && names+=("${DOMAIN_STREAM:-stream.${DOMAIN_BASE:-community.home.arpa}}")
+    [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/hermes.enabled" ]] && names+=("${DOMAIN_HERMES:-hermes.${DOMAIN_BASE:-community.home.arpa}}")
+    if [[ "${#names[@]}" -eq 0 ]]; then
+      names+=("${DOMAIN_BASE:-community.home.arpa}")
+    fi
+    printf '%s\n' "${names[@]}"
+  }
+
+  # OS
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck source=/dev/null
+    . /etc/os-release
+    if [[ "${ID:-}" == "debian" ]]; then
+      pass "Debian ${VERSION_ID}"
+    else
+      fail "Debian (found ${ID:-unknown})"
+    fi
+  else
+    fail "OS detection"
+  fi
+
+  # Docker
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    pass "Docker"
+  else
+    fail "Docker"
+  fi
+
+  if [[ ! -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    fail "Installation (${COMMUNITYOS_ROOT})"
+    echo
+    echo "Run:  sudo communityos install"
+    exit 1
+  fi
+  pass "Installation path"
+  ensure_matrix_federation_env
+
+  # DNS server (optional — user may have chosen not to run CommunityOS DNS)
+  echo
+  echo "DNS Server"
+  server_ip=""
+  if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+    set +a
+    server_ip="${SERVER_IP:-}"
+  fi
+  if docker exec communityos-dns true >/dev/null 2>&1; then
+    pass "dnsmasq running"
+    if ss -lun 2>/dev/null | grep -q ':53 ' || ss -lunt 2>/dev/null | grep -q ':53' \
+       || docker port communityos-dns 2>/dev/null | grep -q 53; then
+      pass "Port 53 reachable"
+    else
+      fail "Port 53 reachable"
+    fi
+    resolve_name() {
+      local name="$1"
+      local ans=""
+      # Query CommunityOS DNS only — never fall back to public/recursive resolvers
+      # (avoids false "resolves to public IP" when LAN names are private).
+      if docker exec communityos-dns true >/dev/null 2>&1; then
+        ans="$(docker exec communityos-dns dig +short +time=1 +tries=1 "${name}" A 2>/dev/null \
+          | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+      fi
+      if [[ -z "${ans}" ]] && command -v dig >/dev/null 2>&1 && [[ -n "${server_ip}" ]]; then
+        # Ask the host's published CommunityOS DNS (SERVER_IP:53), not a public resolver
+        ans="$(dig +time=2 +tries=1 +short @"${server_ip}" "${name}" A 2>/dev/null \
+          | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+      fi
+      printf '%s' "${ans}"
+    }
+    mapfile -t _doc_dns_names < <(_doctor_dns_names)
+    for name in "${_doc_dns_names[@]}"; do
+      ans="$(resolve_name "${name}" || true)"
+      if [[ -n "${ans}" ]]; then
+        if [[ -n "${server_ip}" && "${ans}" != "${server_ip}" ]]; then
+          fail "${name} via CommunityOS DNS → ${ans} (expected ${server_ip})"
+        else
+          pass "${name} via CommunityOS DNS → ${ans}"
+        fi
+      else
+        fail "${name} via CommunityOS DNS (no A record)"
+      fi
+    done
+  else
+    _pd_chk="${PROVIDE_DNS:-0}"
+    case "${_pd_chk}" in 1|true|TRUE|yes|YES|Y|y)
+      fail "CommunityOS DNS not running (PROVIDE_DNS=1)"
+      ;;
+    *)
+      echo "  · CommunityOS DNS not running (PROVIDE_DNS disabled — use hosts or your LAN DNS)"
+      ;;
+    esac
+  fi
+
+  # Gateway
+  if docker exec communityos-caddy true >/dev/null 2>&1; then
+    pass "HTTPS gateway"
+  else
+    fail "HTTPS gateway"
+  fi
+
+  # TLS mode + live cert
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/tls.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/tls.sh" 2>/dev/null || true
+  if declare -F tls_mode_get >/dev/null 2>&1; then
+    _tm="$(tls_mode_get)"
+    if [[ "${_tm}" == "local" ]]; then
+      pass "TLS mode: local CA (CommunityOS / Caddy tls internal)"
+    else
+      pass "TLS mode: public ACME DNS-01 (Let's Encrypt)"
+      if declare -F tls_secrets_ok >/dev/null 2>&1 && tls_secrets_ok; then
+        pass "ACME secrets present (${COMMUNITYOS_ROOT}/secrets/acme.env)"
+      else
+        fail "ACME secrets missing or incomplete (${COMMUNITYOS_ROOT}/secrets/acme.env)"
+      fi
+    fi
+    # Live leaf certificate for DOMAIN_BASE
+    _base="${DOMAIN_BASE:-}"
+    if [[ -n "${_base}" ]] && docker exec communityos-caddy true >/dev/null 2>&1; then
+      _cert_end=""
+      _cert_iss=""
+      _cert_raw="$(echo | openssl s_client -connect "${_base}:443" -servername "${_base}" 2>/dev/null | openssl x509 -noout -issuer -enddate 2>/dev/null || true)"
+      _cert_iss="$(echo "${_cert_raw}" | awk -F'issuer=' '/issuer=/ {print $2; exit}')"
+      _cert_end="$(echo "${_cert_raw}" | awk -F'notAfter=' '/notAfter=/ {print $2; exit}')"
+      if [[ -n "${_cert_iss}" ]]; then
+        if echo "${_cert_iss}" | grep -qiE "Let's Encrypt|ISRG"; then
+          pass "Public certificate active (Let's Encrypt)"
+          pass "Certificate issuer: ${_cert_iss}"
+          [[ -n "${_cert_end}" ]] && pass "Certificate notAfter: ${_cert_end}"
+        elif [[ "${_tm}" == "acme_dns01" ]]; then
+          echo "  · Certificate still provisioning (current issuer is not Let's Encrypt yet)"
+          echo "    issuer: ${_cert_iss}"
+          [[ -n "${_cert_end}" ]] && echo "    notAfter: ${_cert_end}"
+          echo "    re-check: sudo communityos tls prewarm"
+        else
+          pass "Certificate issuer: ${_cert_iss}"
+          [[ -n "${_cert_end}" ]] && pass "Certificate notAfter: ${_cert_end}"
+        fi
+      else
+        if [[ "${_tm}" == "acme_dns01" ]]; then
+          echo "  · Public certificate pending (not readable yet — issuance or gateway still starting)"
+        else
+          echo "  · Certificate details not readable yet (gateway still starting)"
+        fi
+      fi
+    fi
+  fi
+
+  # Core services — only report enabled stacks
+
+  if ! _doctor_service_enabled website; then
+    : # not selected — omit from report
+  elif docker exec communityos-wordpress bash -c 'exec 3<>/dev/tcp/127.0.0.1/80' >/dev/null 2>&1 \
+     || docker exec communityos-caddy wget -q -O /dev/null http://wordpress:80/ >/dev/null 2>&1 \
+     || curl -fsS --connect-timeout 3 -H "Host: ${DOMAIN_BASE:-community.home.arpa}" http://127.0.0.1/ >/dev/null 2>&1; then
+    pass "Website"
+  else
+    fail "Website"
+  fi
+
+  # Chat — synapse health endpoint (image includes curl)
+  if ! _doctor_service_enabled chat; then
+    : # not selected — omit from report
+  else
+    syn_st="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' communityos-synapse 2>/dev/null || true)"
+    if docker exec communityos-synapse curl -fsS --connect-timeout 3 http://127.0.0.1:8008/health >/dev/null 2>&1 \
+       || echo "${syn_st}" | grep -qiE 'healthy'; then
+      pass "Chat"
+    elif echo "${syn_st}" | grep -qiE 'starting'; then
+      echo "  · Chat (still starting — wait and re-run doctor)"
+    else
+      fail "Chat"
+    fi
+  fi
+
+  # Assistant / Ollama
+  if ! _doctor_service_enabled ai; then
+    : # not selected — omit from report
+  else
+    if docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' communityos-open-webui 2>/dev/null | grep -qiE 'healthy|running'; then
+      pass "Assistant (Open WebUI)"
+    else
+      fail "Assistant (Open WebUI)"
+    fi
+    if docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' communityos-ollama 2>/dev/null | grep -qiE 'healthy|running'; then
+      pass "Ollama"
+    else
+      if docker inspect --format='{{.State.Status}}' communityos-ollama 2>/dev/null | grep -qi running; then
+        pass "Ollama"
+      else
+        fail "Ollama"
+      fi
+    fi
+  fi
+
+  # Disk
+  if [[ -d "${COMMUNITYOS_ROOT}" ]]; then
+    avail_kb="$(df -Pk "${COMMUNITYOS_ROOT}" | awk 'NR==2 {print $4}')"
+    avail_gb=$((avail_kb / 1024 / 1024))
+    if [[ "${avail_kb}" -lt $((2 * 1024 * 1024)) ]]; then
+      fail "Disk space (~${avail_gb} GB free)"
+    else
+      pass "Disk space (~${avail_gb} GB free)"
+    fi
+  fi
+
+  # Backups present?
+  if ls "${COMMUNITYOS_ROOT}/backups"/communityos-*.tar.gz >/dev/null 2>&1; then
+    pass "Backups"
+  else
+    echo "  · Backups (none yet — run: communityos backup)"
+  fi
+
+  # Stale /etc/hosts overrides (common while iterating / testing)
+  if [[ -f /etc/hosts ]]; then
+    _hosts_hits="$(grep -E '[[:space:]](community\.home\.arpa|chat\.community\.home\.arpa|ai\.community\.home\.arpa|library\.community\.home\.arpa|maps\.community\.home\.arpa|media\.community\.home\.arpa|files\.community\.home\.arpa|stream\.community\.home\.arpa)([[:space:]]|$)' /etc/hosts 2>/dev/null || true)"
+    if [[ -n "${_hosts_hits}" ]]; then
+      fail "No stale /etc/hosts overrides"
+      echo "      Found CommunityOS names in /etc/hosts (override DNS):"
+      echo "${_hosts_hits}" | sed 's/^/        /'
+      echo "      Remove with: sudo nano /etc/hosts"
+    else
+      pass "No stale /etc/hosts overrides"
+    fi
+  fi
+
+  echo
+  if [[ "${DOCTOR_FAIL}" -eq 0 ]]; then
+    echo "CommunityOS looks healthy."
+    # Remind about client DHCP when server provides DNS
+    if [[ -f "${COMMUNITYOS_ROOT}/.env" ]] && grep -qE '^PROVIDE_DNS=.?1' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+      echo
+      echo "Server DNS is working."
+      echo
+      echo "If another device cannot resolve ${DOMAIN_BASE:-community.home.arpa}:"
+      echo "  • Disconnect and reconnect Wi-Fi"
+      echo "  • OR unplug/reconnect Ethernet"
+      echo "  • OR renew the DHCP lease"
+      echo
+      echo "  The client may still be using its previous DNS server."
+    fi
+  else
+    echo "Some checks failed. Try:  sudo communityos restart"
+  fi
+  echo
+}
+
+
+
+cmd_uninstall() {
+  need_root uninstall
+
+  local purge=0
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      --purge|-p) purge=1 ;;
+      -h|--help)
+        echo "Usage: communityos uninstall [--purge]"
+        echo "  Default keeps database volumes."
+        echo "  --purge also deletes volumes, configs, and local data."
+        exit 0
+        ;;
+    esac
+  done
+
+  local removed_containers=0 removed_networks=0 removed_volumes=0
+  local removed_config=0 removed_cli=0 removed_docker=0 removed_images=0
+  local preserved_data=1 preserved_backups=1
+
+  echo
+  echo "CommunityOS Uninstaller"
+  echo "======================="
+  echo
+  echo "This will remove CommunityOS from this computer."
+  echo
+  echo "It will remove:"
+  echo "  ✓ Docker containers (CommunityOS only)"
+  echo "  ✓ Networks (CommunityOS only)"
+  if [[ "${purge}" -eq 1 ]]; then
+    echo "  ✓ Data volumes (WordPress, Matrix, Assistant, databases)"
+    echo "  ✓ Configuration under ${COMMUNITYOS_ROOT}"
+  else
+    echo "  · Data volumes (kept unless you choose delete)"
+    echo "  · Configuration (kept unless you choose delete)"
+  fi
+  echo "  ✓ DNS service for ${DOMAIN_BASE:-community.home.arpa}"
+  echo
+  echo "It will NOT remove by default:"
+  echo "  • Docker Engine"
+  echo "  • Networks or volumes not created by CommunityOS"
+  echo "  • Manual backups you copied elsewhere"
+  echo
+  read -rp "Continue? [y/N]: " cont
+  case "${cont}" in
+    y|Y|yes|YES|Yes) ;;
+    *) echo "Cancelled."; exit 0 ;;
+  esac
+
+  if [[ "${purge}" -eq 0 ]]; then
+    echo
+    echo "Remove databases?"
+    echo
+    echo "This can permanently erase:"
+    echo "  • WordPress"
+    echo "  • Matrix (Chat)"
+    echo "  • Open WebUI (Assistant)"
+    echo "  • All uploaded content"
+    echo
+    echo "  [1] Keep data (default)"
+    echo "  [2] Delete everything"
+    echo
+    read -rp "Selection [1/2]: " sel
+    case "${sel}" in
+      2) purge=1 ;;
+      *) purge=0 ;;
+    esac
+  fi
+
+  if [[ "${purge}" -eq 1 ]]; then
+    echo
+    echo "This will permanently delete all CommunityOS data."
+    echo
+    echo "Consider creating a backup first:"
+    echo "  communityos backup"
+    echo
+    read -rp "Type DELETE to continue: " confirm
+    if [[ "${confirm}" != "DELETE" ]]; then
+      echo "Cancelled (confirmation did not match)."
+      exit 0
+    fi
+  fi
+
+  echo
+  read -rp "Remove Docker Engine too? [y/N]: " rm_docker
+  case "${rm_docker}" in
+    [yY]*) rm_docker=1 ;;
+    *)     rm_docker=0 ;;
+  esac
+
+  echo
+  log_info "Stopping CommunityOS..."
+  if [[ -f "${COMMUNITYOS_ROOT}/compose.yaml" ]]; then
+    if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+      docker compose -f "${COMMUNITYOS_ROOT}/compose.yaml" --env-file "${COMMUNITYOS_ROOT}/.env" down --remove-orphans 2>/dev/null || true
+    else
+      docker compose -f "${COMMUNITYOS_ROOT}/compose.yaml" down --remove-orphans 2>/dev/null || true
+    fi
+    removed_containers=1
+    removed_networks=1
+  fi
+
+  for c in communityos-caddy communityos-dns communityos-mariadb communityos-postgres \
+           communityos-wordpress communityos-wpcli communityos-synapse communityos-element \
+           communityos-open-webui communityos-open-webui-init; do
+    if docker rm -f "${c}" 2>/dev/null; then
+      removed_containers=1
+    fi
+  done
+
+  # Only CommunityOS compose project network
+  docker network rm communityos_default 2>/dev/null && removed_networks=1 || true
+
+  if [[ "${purge}" -eq 1 ]]; then
+    log_info "Removing data volumes..."
+    for v in communityos_caddy_data communityos_caddy_config communityos_mariadb_data \
+             communityos_wordpress_data communityos_postgres_data communityos_synapse_data \
+             communityos_open_webui_data; do
+      if docker volume rm "${v}" 2>/dev/null; then
+        removed_volumes=1
+      fi
+    done
+    preserved_data=0
+
+    log_info "Removing configuration..."
+    rm -f "${COMMUNITYOS_ROOT}/.env" \
+          "${COMMUNITYOS_ROOT}/config.json" \
+          "${COMMUNITYOS_ROOT}/runtime/dnsmasq.conf" 2>/dev/null || true
+    rm -rf "${COMMUNITYOS_ROOT}/runtime" 2>/dev/null || true
+    removed_config=1
+
+    # Local CA leftovers (only if installer ever dropped them on the host)
+    rm -f /usr/local/share/ca-certificates/communityos*.crt \
+          /usr/local/share/ca-certificates/caddy-local*.crt 2>/dev/null || true
+    if command -v update-ca-certificates >/dev/null 2>&1; then
+      update-ca-certificates >/dev/null 2>&1 || true
+    fi
+
+    read -rp "Also remove pulled CommunityOS container images? [y/N]: " rm_imgs
+    case "${rm_imgs}" in
+      [yY]*)
+        log_info "Removing images..."
+        docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
+          grep -E '^(caddy|mariadb|postgres|wordpress|matrixdotorg/synapse|vectorim/element-web|ghcr.io/open-webui/open-webui|andyshinn/dnsmasq|curlimages/curl):' | \
+          while read -r img; do docker rmi -f "${img}" 2>/dev/null || true; done
+        removed_images=1
+        ;;
+    esac
+
+    rm -f /usr/local/bin/communityos 2>/dev/null || true
+    removed_cli=1
+  else
+    log_ok "Data volumes preserved."
+  fi
+
+  if [[ "${rm_docker}" -eq 1 ]]; then
+    log_info "Removing Docker Engine..."
+    systemctl stop docker 2>/dev/null || true
+    apt-get remove -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin 2>/dev/null || true
+    apt-get autoremove -y -qq 2>/dev/null || true
+    removed_docker=1
+  fi
+
+  if [[ -d "${COMMUNITYOS_ROOT}/backups" ]] && ls "${COMMUNITYOS_ROOT}/backups"/* >/dev/null 2>&1; then
+    preserved_backups=1
+  else
+    preserved_backups=0
+  fi
+
+  echo
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo
+  echo "Removed:"
+  [[ "${removed_containers}" -eq 1 ]] && echo "  ✓ Containers" || echo "  · Containers (none found)"
+  [[ "${removed_networks}" -eq 1 ]] && echo "  ✓ Networks (CommunityOS only)" || echo "  · Networks"
+  if [[ "${purge}" -eq 1 ]]; then
+    [[ "${removed_volumes}" -eq 1 ]] && echo "  ✓ Data volumes" || true
+    echo "  ✓ Databases"
+    echo "  ✓ User uploads"
+    [[ "${removed_config}" -eq 1 ]] && echo "  ✓ Configuration" || true
+    [[ "${removed_images}" -eq 1 ]] && echo "  ✓ Container images" || true
+    [[ "${removed_cli}" -eq 1 ]] && echo "  ✓ communityos command" || true
+  fi
+  [[ "${removed_docker}" -eq 1 ]] && echo "  ✓ Docker Engine" || true
+
+  echo
+  echo "Preserved:"
+  if [[ "${preserved_data}" -eq 1 ]]; then
+    echo "  ✓ Databases"
+    echo "  ✓ User uploads / service data"
+  fi
+  if [[ -d "${COMMUNITYOS_ROOT}/backups" ]] && ls "${COMMUNITYOS_ROOT}/backups"/* >/dev/null 2>&1; then
+    echo "  ✓ Backups:"
+    echo
+    echo "      ${COMMUNITYOS_ROOT}/backups"
+    echo
+    echo "    You may safely archive or delete them later."
+  else
+    echo "  · Manual backups (none found)"
+  fi
+  if [[ "${removed_docker}" -eq 0 ]]; then
+    echo "  ✓ Docker Engine"
+  fi
+  if [[ "${purge}" -eq 0 && "${removed_cli}" -eq 0 ]]; then
+    echo "  ✓ communityos command"
+  fi
+
+  echo
+  echo "Router DNS must be restored manually"
+  echo "(set to Automatic or your ISP)."
+  echo
+  echo "Thank you for trying CommunityOS."
+  echo
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo
+}
+
+
+
+# Load KEY=VALUE from .env without executing unquoted spaces
+
+repair_env_quotes() {
+  local f="${COMMUNITYOS_ROOT}/.env"
+  [[ -f "${f}" ]] || return 0
+  # If COMMUNITY_NAME is unquoted and contains space, re-quote all simple assignments
+  if grep -qE '^COMMUNITY_NAME=[^'\''"].* ' "${f}" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+        local k="${BASH_REMATCH[1]}" v="${BASH_REMATCH[2]}"
+        if [[ "${v}" != \"*\" && "${v}" != \'*\' ]]; then
+          v="${v//\'/\'\\\'\'}"
+          printf "%s='%s'\n" "${k}" "${v}"
+        else
+          printf '%s\n' "${line}"
+        fi
+      else
+        printf '%s\n' "${line}"
+      fi
+    done < "${f}" > "${tmp}"
+    mv "${tmp}" "${f}"
+    chgrp docker "${f}" 2>/dev/null || true
+    chmod 640 "${f}" 2>/dev/null || true
+  fi
+}
+
+load_env() {
+  if [[ -f "${COMMUNITYOS_ROOT}/lib/domain.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${COMMUNITYOS_ROOT}/lib/domain.sh"
+    domain_load
+  fi
+  local f="${COMMUNITYOS_ROOT}/.env"
+  [[ -f "${f}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    if [[ "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      local k="${BASH_REMATCH[1]}"
+      local v="${BASH_REMATCH[2]}"
+      # Strip surrounding quotes if present
+      if [[ "${v}" =~ ^\"(.*)\"$ ]]; then v="${BASH_REMATCH[1]}"; fi
+      if [[ "${v}" =~ ^\'(.*)\'$ ]]; then v="${BASH_REMATCH[1]}"; fi
+      printf -v "${k}" '%s' "${v}"
+      export "${k}"
+    fi
+  done < "${f}"
+}
+
+
+# Append KEY=VALUE to .env safely (always on its own line); never overwrite existing key.
+env_set_default() {
+  local key="$1" value="$2"
+  local f="${COMMUNITYOS_ROOT}/.env"
+  touch "${f}"
+  if grep -q "^${key}=" "${f}" 2>/dev/null; then
+    return 0
+  fi
+  # Ensure file ends with a newline before appending (prevents KEY merge with previous line)
+  if [[ -s "${f}" ]] && [[ -n "$(tail -c 1 "${f}" 2>/dev/null || true)" ]]; then
+    printf '\n' >> "${f}"
+  fi
+  printf '%s=%s\n' "${key}" "${value}" >> "${f}"
+  chgrp docker "${f}" 2>/dev/null || true
+  chmod 640 "${f}" 2>/dev/null || true
+}
+
+wait_for_mariadb() {
+  local i
+  load_env
+  for i in $(seq 1 60); do
+    if docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" communityos-mariadb \
+         mariadb -uroot -e "SELECT 1" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+wait_for_container_healthy() {
+  local name="$1" timeout="${2:-120}" i st
+  for i in $(seq 1 "${timeout}"); do
+    st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${name}" 2>/dev/null || echo none)"
+    if [[ "${st}" == "healthy" ]]; then
+      return 0
+    fi
+    if [[ "${st}" == "none" ]]; then
+      st="$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null || echo unknown)"
+      if [[ "${st}" == "running" ]] && [[ "${i}" -gt 20 ]]; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Read NEXTCLOUD_DB_PASSWORD exactly as Docker Compose will (from .env file parsing).
+# --- Nextcloud credential helpers (config.php is source of truth after first install) ---
+
+compose_nextcloud_mysql_password() {
+  load_env
+  local line v=""
+  if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    line="$(grep -E '^NEXTCLOUD_DB_PASSWORD=' "${COMMUNITYOS_ROOT}/.env" | tail -1 || true)"
+    v="${line#NEXTCLOUD_DB_PASSWORD=}"
+    if [[ "${v}" =~ ^\'(.*)\'$ ]]; then
+      v="${BASH_REMATCH[1]}"
+    elif [[ "${v}" =~ ^\"(.*)\"$ ]]; then
+      v="${BASH_REMATCH[1]}"
+    fi
+  fi
+  if [[ -n "${v}" ]]; then
+    printf '%s' "${v}"
+    return 0
+  fi
+  printf '%s' "${NEXTCLOUD_DB_PASSWORD:-}"
+}
+
+# Print password fingerprint only (never the secret).
+password_fingerprint() {
+  local p="$1"
+  local len="${#p}"
+  local hash
+  hash="$(printf '%s' "${p}" | sha256sum 2>/dev/null | awk '{print $1}' | cut -c1-12)"
+  echo "len=${len} sha256[0:12]=${hash:-unknown}"
+}
+
+# Extract a scalar from Nextcloud config.php on the host mount.
+# Usage: nextcloud_config_get dbpassword
+nextcloud_config_get() {
+  local key="$1"
+  local conf="${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php"
+  [[ -f "${conf}" ]] || return 1
+  python3 - "${conf}" "${key}" <<'PY'
+import re, sys
+path, key = sys.argv[1], sys.argv[2]
+text = open(path, encoding="utf-8", errors="replace").read()
+# 'key' => 'value'  or "key" => "value"
+pat = re.compile(
+    r"['\"]" + re.escape(key) + r"['\"]\s*=>\s*(['\"])(.*?)\1",
+    re.S,
+)
+m = pat.search(text)
+if not m:
+    sys.exit(1)
+val = m.group(2)
+# Unescape simple PHP single-quoted sequences
+val = val.replace("\\'", "'").replace("\\\\", "\\")
+sys.stdout.write(val)
+PY
+}
+
+# Write config.php using PHP itself inside a temporary one-off container or host python.
+# Always writes valid PHP single-quoted strings.
+repair_nextcloud_config_password() {
+  local pass="$1"
+  local conf="${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php"
+  [[ -f "${conf}" ]] || return 0
+
+  log_info "Syncing config.php dbpassword to verified MariaDB password…"
+  if ! python3 - "${conf}" "${pass}" <<'PY'
+import re, sys
+path, password = sys.argv[1], sys.argv[2]
+text = open(path, encoding="utf-8", errors="replace").read()
+# PHP single-quoted: only \\ and \' are special
+php_pass = password.replace("\\", "\\\\").replace("'", "\\'")
+
+def repl_dbpassword(m):
+    return m.group(1) + "'" + php_pass + "'"
+
+pat = re.compile(r"(['\"]dbpassword['\"]\s*=>\s*)(['\"])(.*?)(\2)", re.S)
+if pat.search(text):
+    text2, n = pat.subn(repl_dbpassword, text, count=1)
+    if n != 1:
+        sys.exit(2)
+else:
+    # Insert before closing ); of $CONFIG
+    text2, n = re.subn(
+        r"(\n\)\s*;\s*)$",
+        "\n  'dbpassword' => '%s',\n);" % php_pass,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    if n != 1:
+        sys.exit(3)
+
+# Validate resulting PHP parses (balanced quotes for our key)
+if "'dbpassword'" not in text2 and '"dbpassword"' not in text2:
+    sys.exit(4)
+open(path, "w", encoding="utf-8").write(text2)
+# Re-read and confirm
+m = re.search(r"['\"]dbpassword['\"]\s*=>\s*'((?:\\'|[^'])*)'", open(path, encoding="utf-8").read())
+if not m:
+    sys.exit(5)
+got = m.group(1).replace("\\'", "'").replace("\\\\", "\\")
+if got != password:
+    sys.exit(6)
+PY
+  then
+    log_fail "Failed to write valid config.php dbpassword"
+    return 1
+  fi
+
+  local written
+  written="$(nextcloud_config_get dbpassword 2>/dev/null || true)"
+  if [[ "${written}" != "${pass}" ]]; then
+    log_fail "config.php dbpassword does not match intended password after write"
+    echo "  intended: $(password_fingerprint "${pass}")"
+    echo "  config.php: $(password_fingerprint "${written}")"
+    return 1
+  fi
+  # Apache/status.php runs as www-data (uid 33); installer may have written as root
+  chown 33:33 "${conf}" 2>/dev/null || true
+  chmod 640 "${conf}" 2>/dev/null || true
+  chown -R 33:33 "${COMMUNITYOS_ROOT}/data/nextcloud/config" 2>/dev/null || true
+  log_ok "config.php dbpassword synced ($(password_fingerprint "${pass}"))"
+  return 0
+}
+
+# Test MariaDB using the exact credentials stored in config.php (or pass as args).
+verify_nextcloud_config_db() {
+  local dbhost dbname dbuser dbpass
+  local conf="${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php"
+  local out rc
+
+  if [[ -f "${conf}" ]]; then
+    dbhost="$(nextcloud_config_get dbhost 2>/dev/null || echo mariadb)"
+    dbname="$(nextcloud_config_get dbname 2>/dev/null || echo nextcloud)"
+    dbuser="$(nextcloud_config_get dbuser 2>/dev/null || echo nextcloud)"
+    dbpass="$(nextcloud_config_get dbpassword 2>/dev/null || true)"
+    log_info "config.php DB: host=${dbhost} name=${dbname} user=${dbuser} pass($(password_fingerprint "${dbpass}"))"
+  else
+    dbhost="mariadb"
+    dbname="nextcloud"
+    dbuser="nextcloud"
+    dbpass="$(compose_nextcloud_mysql_password)"
+    log_info "No config.php yet — using Compose password ($(password_fingerprint "${dbpass}"))"
+  fi
+
+  if [[ -z "${dbpass}" ]]; then
+    log_fail "No database password available for verification"
+    return 1
+  fi
+
+  # 1) Direct MariaDB check with config.php password
+  set +e
+  out="$(
+    docker exec -e MYSQL_PWD="${dbpass}" communityos-mariadb \
+      mariadb -u"${dbuser}" -h localhost -D "${dbname}" -e "SELECT 1 AS ok;" 2>&1
+  )"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    # try as TCP from mariadb container itself
+    set +e
+    out="$(
+      docker exec -e MYSQL_PWD="${dbpass}" communityos-mariadb \
+        mariadb -u"${dbuser}" -h 127.0.0.1 -D "${dbname}" -e "SELECT 1 AS ok;" 2>&1
+    )"
+    rc=$?
+    set -e
+  fi
+  if [[ "${rc}" -ne 0 ]]; then
+    log_fail "MariaDB rejects credentials from config.php"
+    echo "${out}" | sed -E 's/[0-9a-fA-F]{16,}/ ***/g' || true
+    return 1
+  fi
+  log_ok "MariaDB accepts config.php credentials"
+
+  # 2) From inside Nextcloud only if the container is running
+  #    (prepare may run while Nextcloud is stopped — MariaDB check above is enough then)
+  local nst
+  nst="$(docker inspect -f '{{.State.Status}}' communityos-nextcloud 2>/dev/null || echo missing)"
+  if [[ "${nst}" == "running" ]]; then
+    set +e
+    out="$(
+      docker exec -i -u 33 communityos-nextcloud php <<'PHPEOF'
+<?php
+// Nextcloud config.php defines \$CONFIG; it does not return the array.
+include '/var/www/html/config/config.php';
+if (!isset($CONFIG) || !is_array($CONFIG)) {
+  file_put_contents('php://stderr', "config.php did not define \$CONFIG array\n");
+  exit(2);
+}
+$h = $CONFIG['dbhost'] ?? 'mariadb';
+$d = $CONFIG['dbname'] ?? 'nextcloud';
+$u = $CONFIG['dbuser'] ?? 'nextcloud';
+$p = $CONFIG['dbpassword'] ?? '';
+try {
+  new PDO('mysql:host=' . $h . ';dbname=' . $d, $u, $p);
+  echo "OK\n";
+  exit(0);
+} catch (Throwable $e) {
+  file_put_contents('php://stderr', $e->getMessage() . "\n");
+  exit(1);
+}
+PHPEOF
+    )"
+    rc=$?
+    set -e
+    if [[ "${rc}" -ne 0 ]]; then
+      log_fail "Nextcloud PHP cannot connect using config.php credentials"
+      echo "${out}" | sed -E 's/[0-9a-fA-F]{16,}/ ***/g' || true
+      return 1
+    fi
+    log_ok "Nextcloud PHP connects using config.php credentials"
+  fi
+  return 0
+}
+
+# Minimum schema required for a healthy CommunityOS Files (Nextcloud) install.
+# This is NOT the full Nextcloud 30 table set — only tables that must exist for
+# login + Files to boot without HTTP 500 (credentials, file cache, and shipped
+# apps that cannot be disabled: workflowengine, twofactor_backupcodes).
+# Authority for the full schema remains Nextcloud's own occ migrations.
+NEXTCLOUD_MIN_FILES_TABLES=(
+  oc_appconfig
+  oc_users
+  oc_accounts
+  oc_filecache
+  oc_storages
+  oc_flow_operations
+  oc_twofactor_providers
+  oc_twofactor_backupcodes
+  oc_addressbooks
+  oc_calendars
+  oc_calendarobjects
+)
+# Back-compat alias used by existing helpers
+NEXTCLOUD_REQUIRED_TABLES=("${NEXTCLOUD_MIN_FILES_TABLES[@]}")
+
+nextcloud_table_exists() {
+  local pass="$1" table="$2" out
+  out="$(
+    docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+      mariadb -unextcloud -D nextcloud -N -e "SHOW TABLES LIKE '${table}';" 2>/dev/null || true
+  )"
+  [[ "${out}" == *"${table}"* ]]
+}
+
+# Column existence (e.g. oc_properties.valuetype required by Files WebDAV)
+nextcloud_column_exists() {
+  local pass="$1" table="$2" column="$3" out
+  out="$(
+    docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+      mariadb -unextcloud -D nextcloud -N -e "SHOW COLUMNS FROM ${table} LIKE '${column}';" 2>/dev/null || true
+  )"
+  [[ "${out}" == *"${column}"* ]]
+}
+
+# True if core install table exists.
+nextcloud_schema_present() {
+  local pass
+  pass="$(compose_nextcloud_mysql_password)"
+  [[ -z "${pass}" ]] && return 1
+  nextcloud_table_exists "${pass}" "oc_appconfig"
+}
+
+# True when minimum Files-required tables all exist AND WebDAV properties schema is usable.
+# Full schema completeness is enforced via successful occ upgrade / force migrations below.
+nextcloud_schema_complete() {
+  local pass t
+  pass="$(compose_nextcloud_mysql_password)"
+  [[ -z "${pass}" ]] && return 1
+  for t in "${NEXTCLOUD_REQUIRED_TABLES[@]}"; do
+    nextcloud_table_exists "${pass}" "${t}" || return 1
+  done
+  # Files UI PROPFIND requires oc_properties.valuetype (dav Version1024Date20211221144219)
+  if ! nextcloud_column_exists "${pass}" "oc_properties" "valuetype"; then
+    return 1
+  fi
+  return 0
+}
+
+nextcloud_list_missing_tables() {
+  local pass t
+  pass="$(compose_nextcloud_mysql_password)"
+  for t in "${NEXTCLOUD_REQUIRED_TABLES[@]}"; do
+    if ! nextcloud_table_exists "${pass}" "${t}"; then
+      echo "  ${t}"
+    fi
+  done
+  if ! nextcloud_column_exists "${pass}" "oc_properties" "valuetype"; then
+    echo "  oc_properties.valuetype (column)"
+  fi
+}
+
+# DB has no Nextcloud tables at all (safe for maintenance:install).
+nextcloud_database_is_empty() {
+  local pass count
+  pass="$(compose_nextcloud_mysql_password)"
+  [[ -z "${pass}" ]] && return 1
+  count="$(
+    docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+      mariadb -unextcloud -D nextcloud -N -e \
+      "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='nextcloud';" 2>/dev/null || echo 999
+  )"
+  [[ "${count}" =~ ^[0-9]+$ ]] && [[ "${count}" -eq 0 ]]
+}
+
+ensure_nextcloud_config_installed_flag() {
+  local conf="${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php"
+  [[ -f "${conf}" ]] || return 1
+  python3 - "${conf}" <<'PY'
+import re, sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8", errors="replace").read()
+if re.search(r"['\"]installed['\"]\s*=>\s*true", text):
+    sys.exit(0)
+if re.search(r"['\"]installed['\"]\s*=>\s*false", text):
+    text2, n = re.subn(r"(['\"]installed['\"]\s*=>\s*)false", r"\1true", text, count=1)
+    if n != 1:
+        sys.exit(2)
+    open(path, "w", encoding="utf-8").write(text2)
+    sys.exit(0)
+text2, n = re.subn(r"(\n\)\s*;\s*)$", "\n  'installed' => true,\n);", text, count=1, flags=re.S)
+if n != 1:
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(text2)
+PY
+  local rc=$?
+  chown 33:33 "${conf}" 2>/dev/null || true
+  chmod 640 "${conf}" 2>/dev/null || true
+  rm -f "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL" 2>/dev/null || true
+  return "${rc}"
+}
+
+# Run Nextcloud's own DB migrations. Returns non-zero if required tables still missing.
+# Force-create tables for a shipped Nextcloud app when migrations are stuck.
+# Does not drop the database or touch user files.
+# Force-create a required table using the migration class that defines it.
+# Inspects Version*.php for createTable('<logical_name>') then runs
+# occ migrations:execute — never invents CREATE TABLE SQL.
+# Force-create a required table via Nextcloud's migration classes.
+# Strategy (no ad-hoc CREATE TABLE, no DB wipe):
+#   1) Locate the Version*.php that calls createTable('<logical>')
+#   2) Clear oc_migrations for that app so the migration is pending
+#   3) Prefer occ migrations:execute / migrations:migrate when available
+#   4) Always finish with occ upgrade (authoritative on this image)
+#   5) Verify with SHOW TABLES
+# Force-create a required table via Nextcloud MigrationService (not ad-hoc SQL).
+# This image only exposes migrations:preview; occ upgrade no-ops when core is
+# already "latest". So we clear oc_migrations and call MigrationService->migrate()
+# through Nextcloud's PHP bootstrap.
+# Force-create a required table via Nextcloud MigrationService (not ad-hoc SQL).
+# occ upgrade no-ops when core is already latest; migrations:execute is absent on this image.
+# Clear oc_migrations, then run MigrationService->migrate() via a temp PHP file in the container.
+# Force-create a required table via Nextcloud's own Migration classes.
+# Strategy:
+#   1) Find Version*.php that contains createTable('<logical>')
+#   2) Clear oc_migrations for the app
+#   3) Call MigrationService::executeStep(create_version) explicitly
+#   4) Then migrate('latest') for remaining versions
+#   5) SHOW TABLES must confirm the table before success
+# Diagnostics are printed when available versions are empty or execute fails.
+# Force-create a required table via Nextcloud MigrationService::executeStep.
+# Uses scripts/nextcloud-force-app-migration.php (docker cp) to avoid heredoc corruption.
+force_nextcloud_app_tables() {
+  local app="$1"
+  local required_table="$2"
+  local pass="$3"
+  local logical="${required_table#oc_}"
+  local mig_dir="/var/www/html/apps/${app}/lib/Migration"
+  local has create_file create_version helper_src helper_dst
+
+  has="$(
+    docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+      mariadb -unextcloud -D nextcloud -N -e "SHOW TABLES LIKE '${required_table}';" 2>/dev/null || true
+  )"
+  if [[ "${has}" == *"${required_table}"* ]]; then
+    return 0
+  fi
+
+  log_info "Forcing schema for app ${app} (missing ${required_table})…"
+
+  create_file="$(
+    docker exec communityos-nextcloud sh -c \
+      "grep -l \"createTable('${logical}')\" ${mig_dir}/Version*.php 2>/dev/null | head -1" \
+      || true
+  )"
+  if [[ -z "${create_file}" ]]; then
+    create_file="$(
+      docker exec communityos-nextcloud sh -c \
+        "grep -l 'createTable(\"${logical}\")' ${mig_dir}/Version*.php 2>/dev/null | head -1" \
+        || true
+    )"
+  fi
+  if [[ -z "${create_file}" ]]; then
+    log_fail "No migration in ${app} defines createTable('${logical}')"
+    docker exec communityos-nextcloud sh -c "ls -1 ${mig_dir}/Version*.php 2>/dev/null; grep -n createTable ${mig_dir}/Version*.php 2>/dev/null | head -20" || true
+    return 1
+  fi
+  create_version="$(basename "${create_file}" | sed 's/^Version//;s/\.php$//')"
+  log_info "Schema creation migration for ${required_table}: ${app} ${create_version}"
+
+  docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+    mariadb -unextcloud -D nextcloud -e "DELETE FROM oc_migrations WHERE app='${app}';" 2>/dev/null || true
+  docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+    mariadb -unextcloud -D nextcloud -e "
+      UPDATE oc_appconfig SET configvalue='0.0.0'
+       WHERE appid='${app}' AND configkey='installed_version';
+    " 2>/dev/null || true
+
+  helper_src=""
+  for cand in \
+    "${COMMUNITYOS_ROOT}/scripts/nextcloud-force-app-migration.php" \
+    "/opt/communityos/scripts/nextcloud-force-app-migration.php" \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/scripts/nextcloud-force-app-migration.php"
+  do
+    if [[ -f "${cand}" ]]; then
+      helper_src="${cand}"
+      break
+    fi
+  done
+  if [[ -z "${helper_src}" ]]; then
+    log_fail "Missing scripts/nextcloud-force-app-migration.php"
+    return 1
+  fi
+
+  helper_dst="/tmp/nextcloud-force-app-migration.php"
+  docker cp "${helper_src}" "communityos-nextcloud:${helper_dst}"
+  docker exec -u 0 communityos-nextcloud chown www-data:www-data "${helper_dst}" 2>/dev/null || true
+
+  set +e
+  docker exec -u 33 communityos-nextcloud \
+    php "${helper_dst}" "${app}" "${create_version}" "${logical}" 2>&1 \
+    | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' \
+    | sed -E 's/[0-9a-fA-F]{32,}/ ***/g' \
+    | tail -80
+  local rc=${PIPESTATUS[0]}
+  set -e
+  docker exec -u 0 communityos-nextcloud rm -f "${helper_dst}" 2>/dev/null || true
+
+  if [[ "${rc}" -ne 0 ]]; then
+    log_fail "Migration executeStep for ${app}/${create_version} failed (exit ${rc})"
+    return 1
+  fi
+
+  has="$(
+    docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+      mariadb -unextcloud -D nextcloud -N -e "SHOW TABLES LIKE '${required_table}';" 2>/dev/null || true
+  )"
+  if [[ "${has}" == *"${required_table}"* ]]; then
+    log_ok "Verified ${required_table} via SHOW TABLES"
+    return 0
+  fi
+
+  log_fail "Required table ${required_table} still missing after executeStep ${create_version}"
+  docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+    mariadb -unextcloud -D nextcloud -N -e "SELECT version FROM oc_migrations WHERE app='${app}' ORDER BY version;" 2>/dev/null || true
+  return 1
+}
+
+
+
+# Wait until Nextcloud's Docker entrypoint has finished initializing.
+# Mere presence of config.php / oc_appconfig / a running container is NOT enough.
+# Ready (migrate mode) means:
+#   1) data dir has .ncdata
+#   2) occ status as UID 33 succeeds with installed: true
+# Mode "any" also accepts installed: false (safe for maintenance:install only).
+wait_for_nextcloud_occ_ready() {
+  local timeout="${1:-300}"
+  local mode="${2:-migrate}"
+  local i=0
+  local out="" rc=1
+  local ncdata_host="${COMMUNITYOS_ROOT}/data/nextcloud/data/.ncdata"
+  local ncdata_ctr="/var/www/html/data/.ncdata"
+
+  log_info "Waiting for Nextcloud entrypoint readiness (mode=${mode}, up to ${timeout}s)…"
+  while [[ "${i}" -lt "${timeout}" ]]; do
+    if ! docker inspect -f '{{.State.Status}}' communityos-nextcloud 2>/dev/null | grep -qi running; then
+      sleep 3
+      i=$((i + 3))
+      continue
+    fi
+
+    if [[ ! -f "${ncdata_host}" ]]; then
+      if ! docker exec -u 33 communityos-nextcloud test -f "${ncdata_ctr}" 2>/dev/null; then
+        sleep 3
+        i=$((i + 3))
+        continue
+      fi
+    fi
+
+    set +e
+    out="$(docker exec -u 33 communityos-nextcloud php occ status 2>&1)"
+    rc=$?
+    set -e
+
+    if [[ "${rc}" -ne 0 ]]; then
+      sleep 3
+      i=$((i + 3))
+      continue
+    fi
+
+    if echo "${out}" | grep -qiE 'installed:[[:space:]]*true'; then
+      log_ok "Nextcloud entrypoint complete (installed=true)"
+      return 0
+    fi
+
+    if [[ "${mode}" == "any" ]] && echo "${out}" | grep -qiE 'installed:[[:space:]]*false'; then
+      log_ok "Nextcloud occ ready (installed=false)"
+      return 0
+    fi
+
+    sleep 3
+    i=$((i + 3))
+  done
+
+  log_fail "Nextcloud entrypoint did not finish within ${timeout}s"
+  echo "Host .ncdata: $(ls -la "${ncdata_host}" 2>&1 || true)"
+  echo "Last occ status (rc=${rc}):"
+  echo "${out}" | head -40
+  docker logs communityos-nextcloud --tail 60 2>&1 \
+    | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+  return 1
+}
+
+run_nextcloud_migrations() {
+  local pass rc
+  if ! docker inspect -f '{{.State.Status}}' communityos-nextcloud 2>/dev/null | grep -q running; then
+    log_fail "Nextcloud container is not running — cannot migrate schema"
+    return 1
+  fi
+  pass="$(compose_nextcloud_mysql_password)"
+  if [[ -z "${pass}" ]]; then
+    log_fail "NEXTCLOUD_DB_PASSWORD empty — cannot migrate schema"
+    return 1
+  fi
+
+  # Entrypoint may still be installing; do not run occ upgrade until occ status works
+  if ! wait_for_nextcloud_occ_ready 300 migrate; then
+    return 1
+  fi
+
+  log_info "Running Nextcloud database migrations…"
+
+  # Clear stuck migration rows when expected tables are missing
+  set +e
+  docker exec -e MYSQL_PWD="${pass}" communityos-mariadb mariadb -unextcloud -D nextcloud -e "
+    DELETE FROM oc_migrations
+     WHERE app = 'workflowengine'
+       AND NOT EXISTS (
+         SELECT 1 FROM information_schema.tables
+          WHERE table_schema='nextcloud' AND table_name='oc_flow_operations'
+       );
+    DELETE FROM oc_migrations
+     WHERE app = 'twofactor_backupcodes'
+       AND NOT EXISTS (
+         SELECT 1 FROM information_schema.tables
+          WHERE table_schema='nextcloud' AND table_name='oc_twofactor_backupcodes'
+       );
+  " 2>/dev/null
+  set -e
+
+  # Authoritative core upgrade
+  set +e
+  docker exec -u 33 communityos-nextcloud php occ upgrade 2>&1 \
+    | sed -E 's/[0-9a-fA-F]{16,}/ ***/g' | tail -50
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log_fail "Nextcloud occ upgrade failed (exit ${rc})"
+    return 1
+  fi
+
+  set +e
+  docker exec -u 33 communityos-nextcloud php occ maintenance:mode --off >/dev/null 2>&1
+  docker exec -u 33 communityos-nextcloud php occ maintenance:repair 2>&1 \
+    | sed -E 's/[0-9a-fA-F]{16,}/ ***/g' | tail -30
+  docker exec -u 33 communityos-nextcloud php occ db:add-missing-indices >/dev/null 2>&1
+  docker exec -u 33 communityos-nextcloud php occ db:add-missing-columns >/dev/null 2>&1
+  docker exec -u 33 communityos-nextcloud php occ db:add-missing-primary-keys >/dev/null 2>&1
+  set -e
+
+  for app in files_sharing files_trashbin files_versions; do
+    docker exec -u 33 communityos-nextcloud php occ app:enable "${app}" >/dev/null 2>&1 || true
+  done
+
+  # Force-create tables for minimum Files schema apps that are stuck
+  if ! force_nextcloud_app_tables "workflowengine" "oc_flow_operations" "${pass}"; then
+    return 1
+  fi
+  if ! force_nextcloud_app_tables "twofactor_backupcodes" "oc_twofactor_backupcodes" "${pass}"; then
+    return 1
+  fi
+
+  # DAV schema: addressbooks/calendars + properties.valuetype (required for Files WebDAV listing)
+  if ! nextcloud_table_exists "${pass}" "oc_addressbooks"; then
+    if ! force_nextcloud_app_tables "dav" "oc_addressbooks" "${pass}"; then
+      log_fail "Could not create dav addressbooks schema"
+      return 1
+    fi
+  fi
+  if ! nextcloud_column_exists "${pass}" "oc_properties" "valuetype"; then
+    log_info "Forcing dav properties.valuetype migration…"
+    docker exec -e MYSQL_PWD="${pass}" communityos-mariadb \
+      mariadb -unextcloud -D nextcloud -e \
+      "DELETE FROM oc_migrations WHERE app='dav' AND version='1024Date20211221144219';" 2>/dev/null || true
+    helper_src=""
+    for cand in \
+      "${COMMUNITYOS_ROOT}/scripts/nextcloud-force-app-migration.php" \
+      "/opt/communityos/scripts/nextcloud-force-app-migration.php"; do
+      [[ -f "${cand}" ]] && helper_src="${cand}" && break
+    done
+    if [[ -z "${helper_src}" ]]; then
+      log_fail "Missing scripts/nextcloud-force-app-migration.php"
+      return 1
+    fi
+    docker cp "${helper_src}" communityos-nextcloud:/tmp/nextcloud-force-app-migration.php
+    docker exec -u 0 communityos-nextcloud chown www-data:www-data /tmp/nextcloud-force-app-migration.php 2>/dev/null || true
+    if ! docker exec -u 33 communityos-nextcloud \
+        php /tmp/nextcloud-force-app-migration.php dav 1024Date20211221144219 properties; then
+      log_fail "Could not apply dav valuetype migration"
+      return 1
+    fi
+    docker exec -u 0 communityos-nextcloud rm -f /tmp/nextcloud-force-app-migration.php 2>/dev/null || true
+    if ! nextcloud_column_exists "${pass}" "oc_properties" "valuetype"; then
+      log_fail "oc_properties.valuetype still missing after dav migration"
+      return 1
+    fi
+    log_ok "oc_properties.valuetype present"
+  fi
+
+  # Final authoritative upgrade pass
+  set +e
+  docker exec -u 33 communityos-nextcloud php occ upgrade 2>&1 \
+    | sed -E 's/[0-9a-fA-F]{16,}/ ***/g' | tail -25
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log_fail "Nextcloud occ upgrade failed on final pass (exit ${rc})"
+    return 1
+  fi
+
+  # Verify with SHOW TABLES before success
+  if nextcloud_schema_complete; then
+    log_ok "Verified minimum Files tables via SHOW TABLES"
+    return 0
+  fi
+  log_fail "Nextcloud minimum Files schema incomplete after migrations"
+  echo "Missing required tables:"
+  nextcloud_list_missing_tables
+  return 1
+}
+
+
+ensure_nextcloud_schema() {
+  local pass conf admin_user admin_pass
+  pass="$(compose_nextcloud_mysql_password)"
+  conf="${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php"
+
+  if [[ -z "${pass}" ]]; then
+    log_fail "NEXTCLOUD_DB_PASSWORD empty"
+    return 1
+  fi
+
+  # Path A: existing installation — preserve config + data; migrate only
+  if nextcloud_schema_present; then
+    log_ok "Nextcloud base schema present (oc_appconfig)"
+    if [[ -f "${conf}" ]]; then
+      ensure_nextcloud_config_installed_flag || log_warn "Could not set installed=true in config.php"
+    fi
+    rm -f "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL" 2>/dev/null || true
+
+    if ! run_nextcloud_migrations; then
+      log_fail "Nextcloud schema migration failed"
+      docker logs communityos-nextcloud --tail 80 2>&1 \
+        | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+      return 1
+    fi
+    if ! nextcloud_schema_complete; then
+      log_fail "Nextcloud minimum Files schema incomplete"
+      echo "Missing required tables:"
+      nextcloud_list_missing_tables
+      return 1
+    fi
+    log_ok "Nextcloud minimum Files schema complete"
+    return 0
+  fi
+
+  # Path B: only when DB is truly empty — fresh maintenance:install
+  if ! nextcloud_database_is_empty; then
+    log_fail "Nextcloud database is non-empty but oc_appconfig is missing (corrupt partial install)"
+    echo "Missing required tables:"
+    nextcloud_list_missing_tables
+    echo "Manual recovery required; installer will not move config.php or user data for a non-empty DB."
+    return 1
+  fi
+
+  log_info "Nextcloud database is empty — performing fresh application install…"
+  load_env
+  admin_user="${ADMIN_USER:-admin}"
+  admin_pass="${ADMIN_PASS:-}"
+  if [[ -z "${admin_pass}" ]]; then
+    log_fail "ADMIN_PASS empty — cannot run maintenance:install"
+    return 1
+  fi
+
+  # Host data survives "compose down -v". Residual files from a previous failed
+  # install leave .ncdata / admin dirs in place while the DB is empty, so the
+  # image entrypoint will not install and maintenance:install fails with
+  # "files already exist for this user". Safe to reset only because DB is empty.
+  local data_root="${COMMUNITYOS_ROOT}/data/nextcloud/data"
+  if [[ -d "${data_root}" ]] && [[ -n "$(ls -A "${data_root}" 2>/dev/null || true)" ]]; then
+    log_info "Empty DB with residual Nextcloud data dir — resetting for clean install"
+    log_info "  (user files under data/nextcloud/data from prior attempts)"
+    rm -rf "${data_root}"
+  fi
+  mkdir -p "${COMMUNITYOS_ROOT}/data/nextcloud/config" "${data_root}"
+  # Empty DB only: discard incomplete config so the image can install cleanly
+  if [[ -f "${conf}" ]]; then
+    mv -f "${conf}" "${conf}.pre-schema-repair.$(date +%s)" 2>/dev/null || rm -f "${conf}"
+  fi
+  # Drop other auto-generated config snippets that confuse a fresh install
+  find "${COMMUNITYOS_ROOT}/data/nextcloud/config" -mindepth 1 -maxdepth 1 ! -name '*.pre-schema-repair.*' -exec rm -rf {} + 2>/dev/null || true
+  touch "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL"
+  chown -R 33:33 "${COMMUNITYOS_ROOT}/data/nextcloud" 2>/dev/null || true
+
+  docker rm -f communityos-nextcloud >/dev/null 2>&1 || true
+  compose up -d --no-deps --force-recreate nextcloud
+
+  # First: wait only until occ is *usable* (installed true or false).
+  # Do not burn 300s requiring installed=true while the app is simply not installed yet.
+  if ! wait_for_nextcloud_occ_ready 180 any; then
+    log_fail "Nextcloud occ is not usable after container start"
+    docker logs communityos-nextcloud --tail 80 2>&1 \
+      | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+    return 1
+  fi
+
+  # If entrypoint already installed, skip maintenance:install
+  set +e
+  _occ_st="$(docker exec -u 33 communityos-nextcloud php occ status 2>&1)"
+  set -e
+  if ! echo "${_occ_st}" | grep -qiE 'installed:[[:space:]]*true'; then
+    log_info "Trying occ maintenance:install…"
+    touch "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL"
+    chown 33:33 "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL" 2>/dev/null || true
+    set +e
+    docker exec -u 33 communityos-nextcloud \
+      php occ maintenance:install \
+        --database=mysql \
+        --database-host=mariadb \
+        --database-name=nextcloud \
+        --database-user=nextcloud \
+        --database-pass="${pass}" \
+        --admin-user="${admin_user}" \
+        --admin-pass="${admin_pass}" \
+        --data-dir=/var/www/html/data 2>&1 | sed -E 's/[0-9a-fA-F]{16,}/ ***/g'
+    local mi_rc=${PIPESTATUS[0]}
+    set -e
+    if [[ "${mi_rc}" -ne 0 ]]; then
+      # Retry once after clearing residual user data (common after partial installs)
+      log_warn "maintenance:install failed — clearing residual user data and retrying once"
+      rm -rf "${data_root}"
+      mkdir -p "${data_root}"
+      touch "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL"
+      chown -R 33:33 "${COMMUNITYOS_ROOT}/data/nextcloud" 2>/dev/null || true
+      set +e
+      docker exec -u 33 communityos-nextcloud \
+        php occ maintenance:install \
+          --database=mysql \
+          --database-host=mariadb \
+          --database-name=nextcloud \
+          --database-user=nextcloud \
+          --database-pass="${pass}" \
+          --admin-user="${admin_user}" \
+          --admin-pass="${admin_pass}" \
+          --data-dir=/var/www/html/data 2>&1 | sed -E 's/[0-9a-fA-F]{16,}/ ***/g'
+      mi_rc=${PIPESTATUS[0]}
+      set -e
+      if [[ "${mi_rc}" -ne 0 ]]; then
+        log_fail "occ maintenance:install failed (exit ${mi_rc})"
+        docker logs communityos-nextcloud --tail 80 2>&1 \
+          | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+        return 1
+      fi
+    fi
+  fi
+
+  if ! wait_for_nextcloud_occ_ready 180 migrate; then
+    return 1
+  fi
+
+  if ! nextcloud_schema_present; then
+    log_fail "Nextcloud schema could not be created (oc_appconfig still missing)"
+    docker logs communityos-nextcloud --tail 80 2>&1 \
+      | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+    return 1
+  fi
+
+  ensure_nextcloud_config_installed_flag || true
+  repair_nextcloud_config_password "${pass}" || return 1
+  rm -f "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL" 2>/dev/null || true
+
+  if ! run_nextcloud_migrations; then
+    log_fail "Nextcloud schema migration failed after fresh install"
+    docker logs communityos-nextcloud --tail 80 2>&1 \
+      | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+    return 1
+  fi
+  if ! nextcloud_schema_complete; then
+    log_fail "Nextcloud minimum Files schema incomplete"
+    echo "Missing required tables:"
+    nextcloud_list_missing_tables
+    return 1
+  fi
+  log_ok "Nextcloud minimum Files schema complete"
+  return 0
+}
+
+
+ensure_nextcloud_admin() {
+  local admin_user admin_pass data_root data_admin orphan scan_out rc
+  load_env
+  admin_user="${ADMIN_USER:-admin}"
+  admin_pass="${ADMIN_PASS:-}"
+  data_root="${COMMUNITYOS_ROOT}/data/nextcloud/data"
+  data_admin="${data_root}/${admin_user}"
+
+  if [[ -z "${admin_pass}" ]]; then
+    log_warn "ADMIN_PASS empty — cannot set Nextcloud admin password"
+    return 0
+  fi
+  if ! docker inspect -f '{{.State.Status}}' communityos-nextcloud 2>/dev/null | grep -q running; then
+    log_warn "Nextcloud not running — skip admin ensure"
+    return 0
+  fi
+
+  # Authoritative existence check: occ user:info (not a fragile user:list grep).
+  # The official image entrypoint often already created NEXTCLOUD_ADMIN_USER.
+  local user_exists=0
+  set +e
+  docker exec -u 33 communityos-nextcloud php occ user:info "${admin_user}" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
+    user_exists=1
+  else
+    # Fallback: user:list in several common formats
+    set +e
+    users="$(docker exec -u 33 communityos-nextcloud php occ user:list 2>/dev/null)"
+    set -e
+    if echo "${users}" | grep -qiE "(^|[[:space:]|-])${admin_user}([[:space:]]*:|$)"; then
+      user_exists=1
+    fi
+  fi
+
+  if [[ "${user_exists}" -eq 1 ]]; then
+    log_ok "Nextcloud user '${admin_user}' already exists — keeping account and data directory"
+    # Never rename data/${admin_user} when the account exists
+  else
+    # True missing account. Only then preserve/move a leftover data dir and create.
+    if [[ -d "${data_admin}" ]]; then
+      orphan="${data_admin}.orphan.$(date +%s)"
+      log_info "Preserving orphaned data dir for missing account '${admin_user}' → $(basename "${orphan}")"
+      mv -f "${data_admin}" "${orphan}"
+    fi
+
+    log_info "Creating Nextcloud user '${admin_user}'…"
+    set +e
+    add_out="$(docker exec -u 33 -e OC_PASS="${admin_pass}" communityos-nextcloud \
+      php occ user:add --password-from-env --display-name="${admin_user}" "${admin_user}" 2>&1)"
+    rc=$?
+    set -e
+    echo "${add_out}" | sed -E 's/[0-9a-fA-F]{16,}/ ***/g' || true
+    if [[ "${rc}" -ne 0 ]]; then
+      # Race: entrypoint created the user between our check and user:add
+      if echo "${add_out}" | grep -qiE 'already exists'; then
+        log_ok "Nextcloud user '${admin_user}' already exists (created during install)"
+      else
+        log_fail "Could not create Nextcloud user '${admin_user}'"
+        return 1
+      fi
+    else
+      local latest=""
+      latest="$(ls -1dt "${data_root}/${admin_user}".orphan.* 2>/dev/null | head -1 || true)"
+      if [[ -n "${latest}" && -d "${latest}/files" ]]; then
+        log_info "Restoring files from $(basename "${latest}") into new account…"
+        mkdir -p "${data_admin}/files"
+        cp -a "${latest}/files/." "${data_admin}/files/" 2>/dev/null || true
+        chown -R 33:33 "${data_admin}" 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  # Align password to CommunityOS ADMIN_PASS (idempotent)
+  log_info "Aligning Nextcloud password for '${admin_user}'…"
+  set +e
+  docker exec -u 33 -e OC_PASS="${admin_pass}" communityos-nextcloud \
+    php occ user:resetpassword --password-from-env "${admin_user}" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log_warn "Could not reset Nextcloud password for '${admin_user}'"
+  else
+    log_ok "Nextcloud password aligned for '${admin_user}'"
+  fi
+
+  # Ensure on-disk home exists (cache can reference a path wiped by prior cleanups)
+  mkdir -p "${data_admin}/files"
+  chown -R 33:33 "${data_root}" 2>/dev/null || true
+  docker exec -u 0 communityos-nextcloud \
+    sh -c "mkdir -p /var/www/html/data/${admin_user}/files && chown -R 33:33 /var/www/html/data/${admin_user}" 2>/dev/null || true
+
+  # Register files in cache; recover from common scan conflicts
+  log_info "Scanning Nextcloud files for '${admin_user}'…"
+  set +e
+  docker exec -u 33 communityos-nextcloud php occ files:cleanup >/dev/null 2>&1
+  scan_out="$(docker exec -u 33 communityos-nextcloud php occ files:scan "${admin_user}" 2>&1)"
+  rc=$?
+  set -e
+  if echo "${scan_out}" | grep -qiE 'mkdir\(\): File exists|exists in cache but not on disk'; then
+    log_info "Repairing file cache / missing on-disk home…"
+    mkdir -p "${data_admin}/files"
+    chown -R 33:33 "${data_admin}" 2>/dev/null || true
+    set +e
+    docker exec -u 33 communityos-nextcloud php occ files:cleanup >/dev/null 2>&1
+    scan_out="$(docker exec -u 33 communityos-nextcloud php occ files:scan --path="/${admin_user}/files" "${admin_user}" 2>&1)"
+    rc=$?
+    if [[ "${rc}" -ne 0 ]] || echo "${scan_out}" | grep -qiE 'mkdir\(\): File exists|exists in cache but not on disk|Error during scan'; then
+      docker exec -u 33 communityos-nextcloud php occ maintenance:repair --include-expensive >/dev/null 2>&1
+      scan_out="$(docker exec -u 33 communityos-nextcloud php occ files:scan "${admin_user}" 2>&1)"
+      rc=$?
+    fi
+    set -e
+  fi
+  if echo "${scan_out}" | grep -qiE 'Error during scan|mkdir\(\): File exists|exists in cache but not on disk'; then
+    log_warn "files:scan reported issues (account remains valid):"
+    echo "${scan_out}" | tail -20
+  else
+    log_ok "Nextcloud files scanned for '${admin_user}'"
+    echo "${scan_out}" | tail -8
+  fi
+
+  # Verify account exists via user:info (not fragile user:list formatting)
+  set +e
+  docker exec -u 33 communityos-nextcloud php occ user:info "${admin_user}" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log_fail "Nextcloud user '${admin_user}' still missing after recovery"
+    return 1
+  fi
+
+  log_ok "Nextcloud admin '${admin_user}' ready (files preserved)"
+  return 0
+}
+
+
+verify_nextcloud_status_php() {
+  local i out code body
+  log_info "Waiting for Nextcloud status.php…"
+  if [[ -f "${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php" ]]; then
+    chown 33:33 "${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php" 2>/dev/null || true
+    chmod 640 "${COMMUNITYOS_ROOT}/data/nextcloud/config/config.php" 2>/dev/null || true
+  fi
+  if nextcloud_schema_present 2>/dev/null; then
+    rm -f "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL" 2>/dev/null || true
+    ensure_nextcloud_config_installed_flag 2>/dev/null || true
+  fi
+  for i in $(seq 1 90); do
+    set +e
+    out="$(docker exec communityos-nextcloud curl -sS -o /tmp/nc-status.body -w '%{http_code}' http://127.0.0.1/status.php 2>/dev/null)"
+    code=$?
+    body="$(docker exec communityos-nextcloud cat /tmp/nc-status.body 2>/dev/null || true)"
+    set -e
+    if [[ "${code}" -eq 0 && "${out}" == "200" ]]; then
+      if echo "${body}" | grep -qE '"installed"[[:space:]]*:[[:space:]]*true'; then
+        log_ok "status.php reports installed=true"
+        rm -f "${COMMUNITYOS_ROOT}/data/nextcloud/config/CAN_INSTALL" 2>/dev/null || true
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  log_fail "status.php did not report installed=true (last HTTP=${out:-curl-fail})"
+  echo "status.php body:"
+  echo "${body:-}" | head -c 800
+  echo
+  echo "occ status (if available):"
+  docker exec -u 33 communityos-nextcloud php occ status 2>&1 | head -30 || true
+  ls -la "${COMMUNITYOS_ROOT}/data/nextcloud/config/" 2>/dev/null | head -20 || true
+  echo "Recent logs:"
+  docker logs communityos-nextcloud --tail 40 2>&1 | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+  return 1
+}
+
+
+# Idempotent Nextcloud DB bootstrap + config.php repair.
+prepare_nextcloud_database() {
+  local envf="${COMMUNITYOS_ROOT}/.env"
+  local sql_out sql_rc pass
+
+  mkdir -p "${COMMUNITYOS_ROOT}/data/nextcloud"
+  chown -R 33:33 "${COMMUNITYOS_ROOT}/data/nextcloud" 2>/dev/null || true
+
+  env_set_default NEXTCLOUD_DB_PASSWORD "$(openssl rand -hex 16)"
+  load_env
+
+  if [[ -z "${MYSQL_ROOT_PASSWORD:-}" ]]; then
+    log_fail "MYSQL_ROOT_PASSWORD is empty — cannot prepare Nextcloud database"
+    return 1
+  fi
+
+  pass="$(compose_nextcloud_mysql_password)"
+  if [[ -z "${pass}" ]]; then
+    log_fail "NEXTCLOUD_DB_PASSWORD is empty"
+    return 1
+  fi
+  if [[ ! "${pass}" =~ ^[0-9a-fA-F]+$ ]]; then
+    log_fail "NEXTCLOUD_DB_PASSWORD has unexpected format (expected hex from installer)"
+    return 1
+  fi
+  log_info "Using NEXTCLOUD_DB_PASSWORD ($(password_fingerprint "${pass}"))"
+
+  log_info "Waiting for MariaDB…"
+  if ! wait_for_mariadb; then
+    log_fail "MariaDB is not ready"
+    return 1
+  fi
+
+  log_info "Preparing Nextcloud database user and grants…"
+  set +e
+  sql_out="$(
+    docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" communityos-mariadb \
+      mariadb -uroot -e "
+        CREATE DATABASE IF NOT EXISTS nextcloud CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+        CREATE USER IF NOT EXISTS 'nextcloud'@'%' IDENTIFIED BY '${pass}';
+        ALTER USER 'nextcloud'@'%' IDENTIFIED BY '${pass}';
+        GRANT ALL PRIVILEGES ON nextcloud.* TO 'nextcloud'@'%';
+        FLUSH PRIVILEGES;
+      " 2>&1
+  )"
+  sql_rc=$?
+  set -e
+  if [[ "${sql_rc}" -ne 0 ]]; then
+    log_fail "MariaDB rejected Nextcloud database setup (exit ${sql_rc})"
+    echo "${sql_out}" | sed -E 's/(BY |PASSWORD[=: ]*)[^[:space:]]+/\1***/gi' | sed -E 's/[0-9a-fA-F]{16,}/ ***/g' || true
+    return 1
+  fi
+
+  # Sync config.php BEFORE any app request can use the old password
+  if ! repair_nextcloud_config_password "${pass}"; then
+    return 1
+  fi
+
+  # Verify MariaDB accepts the password that is now in config.php
+  if ! verify_nextcloud_config_db; then
+    return 1
+  fi
+
+  # Empty DB + leftover config.php causes status.php 500 (missing oc_appconfig)
+  if ! ensure_nextcloud_schema; then
+    return 1
+  fi
+
+  log_ok "Nextcloud database credentials aligned (.env ↔ MariaDB ↔ config.php)"
+  return 0
+}
+
+
+
+cmd_apps() {
+  ensure_installed
+  # shellcheck source=/dev/null
+  source "${COMMUNITYOS_ROOT}/lib/apps.sh" 2>/dev/null || true
+  echo
+  echo "CommunityOS Apps"
+  echo "================"
+  echo
+  echo "Installed (core)"
+  echo "  ✓ Website      https://${DOMAIN_BASE:-community.home.arpa}"
+  echo "  ✓ Chat         https://${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}"
+  echo "  ✓ Assistant    https://${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}"
+  echo
+  echo "Optional"
+  local id name desc url ctn status
+  for id in $(app_list_ids 2>/dev/null || printf '%s\n' kiwix maps jellyfin); do
+    name="$(app_meta "${id}" name)"
+    desc="$(app_meta "${id}" description)"
+    url="$(app_meta "${id}" url)"
+    ctn="$(app_meta "${id}" container)"
+    if app_is_enabled "${id}"; then
+      status="installed"
+      if [[ -n "${ctn}" ]] && docker inspect --format='{{.State.Status}}' "${ctn}" 2>/dev/null | grep -qi running; then
+        status="running"
+      elif [[ -n "${ctn}" ]] && docker inspect "${ctn}" >/dev/null 2>&1; then
+        status="stopped"
+      fi
+      echo "  ✓ ${name}  (${status})"
+      echo "      ${url}"
+    else
+      echo "  ○ ${name}"
+      echo "      ${desc}"
+      echo "      Install:  sudo communityos app install ${id}"
+    fi
+    echo
+  done
+}
+
+ensure_peertube_admin() {
+  # PeerTube first-boot always creates username "root".
+  # PT_INITIAL_ROOT_PASSWORD (apps/peertube.yaml) sets that password on first create.
+  # This helper waits for first-boot, preserves existing admin, optionally renames
+  # root→ADMIN_USER, and aligns password. Password CLI needs a TTY so we prefer
+  # bcrypt-in-container + SQL update. Never clear peertube.enabled for a recoverable
+  # already-exists / password-align condition (Nextcloud-style).
+  local admin_user admin_pass pg_pass
+  load_env 2>/dev/null || true
+  admin_user="${ADMIN_USER:-admin}"
+  admin_pass="${ADMIN_PASS:-}"
+  pg_pass="${PEERTUBE_DB_PASSWORD:-}"
+
+  if [[ -z "${admin_pass}" ]]; then
+    log_warn "ADMIN_PASS is empty — PeerTube admin password not aligned"
+    return 0
+  fi
+  if [[ -z "${pg_pass}" ]]; then
+    log_warn "PEERTUBE_DB_PASSWORD is empty — skip PeerTube admin ensure"
+    return 0
+  fi
+
+  local i status
+  for i in $(seq 1 60); do
+    status="$(docker inspect -f '{{.State.Status}}' communityos-peertube 2>/dev/null || echo missing)"
+    if [[ "${status}" == "running" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${status}" != "running" ]]; then
+    log_fail "PeerTube container is not running — cannot configure admin"
+    return 1
+  fi
+
+  log_info "Waiting for PeerTube first-boot schema (user table)…"
+  local ready=0 cnt
+  for i in $(seq 1 90); do
+    cnt="$(
+      docker exec -e PGPASSWORD="${pg_pass}" communityos-postgres \
+        psql -U peertube -d peertube -tAc "SELECT COUNT(*) FROM \"user\";" 2>/dev/null || echo 0
+    )"
+    cnt="$(echo "${cnt}" | tr -d '[:space:]')"
+    if [[ "${cnt}" =~ ^[1-9][0-9]*$ ]]; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${ready}" -ne 1 ]]; then
+    log_fail "PeerTube database schema did not become ready (no user rows after ~3 min)"
+    echo "  Check: docker logs communityos-peertube --tail 80"
+    return 1
+  fi
+
+  # Detect existing usernames (root is upstream default)
+  local has_root=0 has_admin=0
+  local row
+  row="$(
+    docker exec -e PGPASSWORD="${pg_pass}" communityos-postgres \
+      psql -U peertube -d peertube -tAc \
+      "SELECT username FROM \"user\" WHERE username IN ('root', '${admin_user}');" 2>/dev/null || true
+  )"
+  echo "${row}" | grep -qx 'root' && has_root=1 || true
+  if [[ "${admin_user}" != "root" ]]; then
+    echo "${row}" | grep -qx "${admin_user}" && has_admin=1 || true
+  else
+    has_admin="${has_root}"
+  fi
+
+  local target="root"
+  if [[ "${has_admin}" -eq 1 ]]; then
+    log_ok "PeerTube administrator '${admin_user}' already exists — keeping account"
+    target="${admin_user}"
+  elif [[ "${has_root}" -eq 1 ]]; then
+    if [[ "${admin_user}" == "root" ]]; then
+      log_ok "PeerTube administrator 'root' already exists — keeping account"
+      target="root"
+      has_admin=1
+    else
+      log_info "Renaming PeerTube administrator root → '${admin_user}'…"
+      if docker exec -e PGPASSWORD="${pg_pass}" communityos-postgres \
+          psql -U peertube -d peertube -v ON_ERROR_STOP=1 \
+          -v new_user="${admin_user}" <<'SQL'
+BEGIN;
+UPDATE "user"
+SET username = :'new_user'
+WHERE username = 'root'
+  AND NOT EXISTS (SELECT 1 FROM "user" WHERE username = :'new_user');
+UPDATE actor
+SET "preferredUsername" = :'new_user'
+WHERE "preferredUsername" = 'root' AND type = 'Person'
+  AND NOT EXISTS (SELECT 1 FROM actor WHERE "preferredUsername" = :'new_user' AND type = 'Person');
+UPDATE account
+SET name = :'new_user'
+WHERE name = 'root'
+  AND NOT EXISTS (SELECT 1 FROM account WHERE name = :'new_user');
+UPDATE actor
+SET "preferredUsername" = :'new_user' || '_channel'
+WHERE "preferredUsername" = 'root_channel'
+  AND NOT EXISTS (SELECT 1 FROM actor WHERE "preferredUsername" = :'new_user' || '_channel');
+UPDATE account
+SET name = :'new_user' || '_channel'
+WHERE name = 'root_channel'
+  AND NOT EXISTS (SELECT 1 FROM account WHERE name = :'new_user' || '_channel');
+COMMIT;
+SQL
+      then
+        has_admin=1
+        target="${admin_user}"
+        log_ok "PeerTube administrator renamed to '${admin_user}'"
+      else
+        log_warn "Could not rename root → '${admin_user}'; PeerTube admin remains 'root'"
+        target="root"
+        has_admin=1
+      fi
+    fi
+  else
+    log_warn "No PeerTube administrator row found yet (expected root). Check logs if login fails."
+    echo "  docker logs communityos-peertube --tail 80"
+    return 0
+  fi
+
+  # Align password without TTY: bcrypt inside the PeerTube image, then SQL update.
+  # (npm run reset-password uses a silent prompt that requires a TTY.)
+  log_info "Aligning PeerTube password for '${target}'…"
+  local hash
+  hash="$(
+    docker exec -u peertube -e PT_PASS="${admin_pass}" communityos-peertube \
+      node -e '
+        let bcrypt;
+        try { bcrypt = require("bcrypt"); }
+        catch (e) { bcrypt = require("bcryptjs"); }
+        const p = process.env.PT_PASS || "";
+        if (!p) { process.exit(2); }
+        if (typeof bcrypt.hashSync === "function") {
+          process.stdout.write(bcrypt.hashSync(p, 10));
+        } else {
+          bcrypt.hash(p, 10).then(h => process.stdout.write(h)).catch(() => process.exit(1));
+        }
+      ' 2>/dev/null || true
+  )"
+  hash="$(echo -n "${hash}" | tr -d '\r\n')"
+  if [[ -n "${hash}" && "${hash}" == '$2'* ]]; then
+    # Dollar-quote the hash so special characters cannot break SQL
+    if docker exec -i -e PGPASSWORD="${pg_pass}" communityos-postgres \
+          psql -U peertube -d peertube -v ON_ERROR_STOP=1 <<SQL >/dev/null 2>&1
+UPDATE "user"
+SET password = \$pt\$${hash}\$pt\$
+WHERE username = '${target}';
+SQL
+    then
+      log_ok "PeerTube password aligned for '${target}'"
+    else
+      log_warn "Could not write PeerTube password hash for '${target}' (account retained)"
+    fi
+  else
+    log_warn "Could not bcrypt-hash ADMIN_PASS inside PeerTube image (account retained)"
+    log_warn "Set password manually if login fails:"
+    echo "  sudo docker exec -it -u peertube communityos-peertube npm run reset-password -- -u ${target}"
+  fi
+
+  local found
+  found="$(
+    docker exec -e PGPASSWORD="${pg_pass}" communityos-postgres \
+      psql -U peertube -d peertube -tAc \
+      "SELECT 1 FROM \"user\" WHERE username IN ('${admin_user}', 'root') LIMIT 1;" 2>/dev/null || true
+  )"
+  found="$(echo "${found}" | tr -d '[:space:]')"
+  if [[ "${found}" == "1" ]]; then
+    log_ok "PeerTube administrator ready (login: ${target})"
+    return 0
+  fi
+  log_warn "PeerTube administrator row not confirmed — check docker logs communityos-peertube"
+  return 0
+}
+
+cmd_app() {
+  ensure_installed
+  # shellcheck source=/dev/null
+  source "${COMMUNITYOS_ROOT}/lib/apps.sh"
+  local sub="${1:-}"
+  shift || true
+  case "${sub}" in
+    install)
+      need_root "app install"
+      local id raw="${1:-}"
+      id="$(app_aliases_resolve "${raw}")"
+      if [[ -z "${id}" ]] || [[ -z "$(app_meta "${id}" name)" ]]; then
+        echo "Usage: communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+        exit 1
+      fi
+      repair_env_quotes
+      log_info "Installing app: $(app_meta "${id}" name)..."
+      mkdir -p "$(app_meta "${id}" data)" "${COMMUNITYOS_ROOT}/data/jellyfin/media"
+
+      if [[ "${id}" == "peertube" ]]; then
+        echo
+        echo "Note: Streaming (PeerTube) benefits from extra CPU, RAM, and disk"
+        echo "      because video transcoding can be resource-intensive."
+        echo
+        mkdir -p "${COMMUNITYOS_ROOT}/data/peertube/data" \
+                 "${COMMUNITYOS_ROOT}/data/peertube/config" \
+                 "${COMMUNITYOS_ROOT}/data/peertube/redis"
+        if ! grep -q '^PEERTUBE_DB_PASSWORD=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+          echo "PEERTUBE_DB_PASSWORD=$(openssl rand -hex 16)" >> "${COMMUNITYOS_ROOT}/.env"
+        fi
+        if ! grep -q '^PEERTUBE_SECRET=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+          echo "PEERTUBE_SECRET=$(openssl rand -hex 32)" >> "${COMMUNITYOS_ROOT}/.env"
+        fi
+        chgrp docker "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+        chmod 640 "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+        load_env
+        # Postgres role/database bootstrap runs later, after postgres is started
+        # and healthy (see peertube case after app_enable).
+      fi
+
+      # Maps: deploy overlay + pmtiles BEFORE compose starts maps-api
+      if [[ "${id}" == "maps" ]]; then
+        # Refresh package files when CLI is run from a release extract tree
+        local _pkg=""
+        if [[ -n "${COMMUNITYOS_PKG:-}" && -d "${COMMUNITYOS_PKG}/apps" ]]; then
+          _pkg="${COMMUNITYOS_PKG}"
+        else
+          local _cli _dir
+          _cli="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          _dir="$(cd "$(dirname "${_cli}")/.." && pwd)"
+          if [[ -f "${_dir}/apps/maps.yaml" || -f "${_dir}/scripts/maps-api.py" ]]; then
+            _pkg="${_dir}"
+          fi
+        fi
+        if [[ -n "${_pkg}" && "${_pkg}" != "${COMMUNITYOS_ROOT}" ]]; then
+          mkdir -p "${COMMUNITYOS_ROOT}/apps" "${COMMUNITYOS_ROOT}/scripts" "${COMMUNITYOS_ROOT}/config" "${COMMUNITYOS_ROOT}/static/maps" "${COMMUNITYOS_ROOT}/lib"
+          [[ -f "${_pkg}/lib/apps.sh" ]] && cp -a "${_pkg}/lib/apps.sh" "${COMMUNITYOS_ROOT}/lib/apps.sh"
+          [[ -f "${_pkg}/apps/maps.yaml" ]] && cp -a "${_pkg}/apps/maps.yaml" "${COMMUNITYOS_ROOT}/apps/maps.yaml"
+          [[ -f "${_pkg}/scripts/maps-api.py" ]] && cp -a "${_pkg}/scripts/maps-api.py" "${COMMUNITYOS_ROOT}/scripts/maps-api.py"
+          [[ -f "${_pkg}/config/maps-source.env" ]] && cp -a "${_pkg}/config/maps-source.env" "${COMMUNITYOS_ROOT}/config/maps-source.env"
+          [[ -f "${_pkg}/static/maps/index.html" ]] && cp -a "${_pkg}/static/maps/index.html" "${COMMUNITYOS_ROOT}/static/maps/index.html"
+          [[ -f "${_pkg}/Caddyfile" ]] && cp -a "${_pkg}/Caddyfile" "${COMMUNITYOS_ROOT}/Caddyfile"
+          # shellcheck source=/dev/null
+          source "${COMMUNITYOS_ROOT}/lib/apps.sh"
+        fi
+        if declare -F app_deploy_maps_files >/dev/null 2>&1; then
+          app_deploy_maps_files
+        else
+          log_fail "app_deploy_maps_files missing — update CommunityOS package files under ${COMMUNITYOS_ROOT}"
+          exit 1
+        fi
+        if ! grep -q 'communityos-maps-api' "${COMMUNITYOS_ROOT}/apps/maps.yaml" 2>/dev/null; then
+          log_fail "apps/maps.yaml does not define communityos-maps-api"
+          exit 1
+        fi
+        if [[ ! -f "${COMMUNITYOS_ROOT}/scripts/maps-api.py" ]]; then
+          log_fail "scripts/maps-api.py is missing under ${COMMUNITYOS_ROOT}"
+          exit 1
+        fi
+        if declare -F install_pmtiles_cli >/dev/null 2>&1; then
+          install_pmtiles_cli
+        fi
+        if [[ ! -x "${COMMUNITYOS_ROOT}/bin/pmtiles" ]]; then
+          log_fail "pmtiles CLI was not installed at ${COMMUNITYOS_ROOT}/bin/pmtiles"
+          exit 1
+        fi
+        if [[ ! -f "${COMMUNITYOS_ROOT}/data/maps/README.txt" ]]; then
+          cat > "${COMMUNITYOS_ROOT}/data/maps/README.txt" <<'MAPREADME'
+Place .pmtiles or .mbtiles files in this directory, then:
+  sudo communityos app restart maps
+Open: https://${DOMAIN_MAPS:-maps.${DOMAIN_BASE:-community.home.arpa}}
+PMTiles CLI: /opt/communityos/bin/pmtiles
+MAPREADME
+        fi
+        log_info "Maps overlay ready (martin + maps-api)"
+      fi
+
+
+      if [[ "${id}" == "hermes" ]]; then
+        echo
+        echo "╔══════════════════════════════════════════════════════════════════════╗"
+        echo "║  WARNING — Hermes Agent is not ordinary chat                         ║"
+        echo "╠══════════════════════════════════════════════════════════════════════╣"
+        echo "║  Hermes can use tools: terminal commands, file access, browser,      ║"
+        echo "║  code execution, and persistent memory/skills.                       ║"
+        echo "║                                                                      ║"
+        echo "║  CommunityOS runs it in an isolated container (no host docker.sock,  ║"
+        echo "║  no LAN ports). It still has substantial capability inside that      ║"
+        echo "║  container. Only install if you trust this on your community server. ║"
+        echo "╚══════════════════════════════════════════════════════════════════════╝"
+        echo
+        echo "Resources: Hermes itself wants ~2–4 GB RAM recommended (min ~1 GB)."
+        echo "Model weights are separate and come from the existing Ollama service"
+        echo "(pull models with:  sudo docker exec -it communityos-ollama ollama pull <model>)."
+        echo "No external API key is required for the basic local configuration."
+        echo
+        mkdir -p "${COMMUNITYOS_ROOT}/data/hermes"
+        # API key for Open WebUI ↔ Hermes (OpenAI-compatible API server)
+        if ! grep -q '^HERMES_API_SERVER_KEY=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+          echo "HERMES_API_SERVER_KEY=$(openssl rand -hex 24)" >> "${COMMUNITYOS_ROOT}/.env"
+        fi
+        if ! grep -q '^HERMES_DASHBOARD_USER=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+          echo "HERMES_DASHBOARD_USER=admin" >> "${COMMUNITYOS_ROOT}/.env"
+        fi
+        if ! grep -q '^HERMES_DASHBOARD_PASSWORD=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+          # Prefer CommunityOS admin password when set; otherwise random
+          load_env 2>/dev/null || true
+          if [[ -n "${ADMIN_PASS:-}" ]]; then
+            echo "HERMES_DASHBOARD_PASSWORD=${ADMIN_PASS}" >> "${COMMUNITYOS_ROOT}/.env"
+          else
+            echo "HERMES_DASHBOARD_PASSWORD=$(openssl rand -hex 16)" >> "${COMMUNITYOS_ROOT}/.env"
+          fi
+        fi
+        chgrp docker "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+        chmod 640 "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+        load_env
+        # Seed local-first config: Ollama on compose network, terminal local to container
+        local hermes_cfg="${COMMUNITYOS_ROOT}/data/hermes/config.yaml"
+        local hermes_envf="${COMMUNITYOS_ROOT}/data/hermes/.env"
+        if [[ ! -f "${hermes_cfg}" ]]; then
+          cat > "${hermes_cfg}" <<'HERMESCFG'
+# CommunityOS local-first Hermes configuration
+# Inference: shared Ollama service (no duplicate model weights)
+model:
+  provider: custom
+  # Change after: docker exec -it communityos-ollama ollama pull <name>
+  model: llama3.2:3b
+  base_url: http://ollama:11434/v1
+  api_key: "none"
+
+# Terminal stays inside this container (no host docker.sock)
+terminal:
+  backend: local
+  timeout: 180
+
+# Agent memory / skills persist under /opt/data (this volume)
+HERMESCFG
+        fi
+        # Ensure API server settings exist in Hermes home .env (image also reads process env)
+        if [[ ! -f "${hermes_envf}" ]] || ! grep -q '^API_SERVER_ENABLED=' "${hermes_envf}" 2>/dev/null; then
+          cat > "${hermes_envf}" <<HERMESENV
+API_SERVER_ENABLED=true
+API_SERVER_HOST=0.0.0.0
+API_SERVER_PORT=8642
+API_SERVER_KEY=${HERMES_API_SERVER_KEY}
+HERMES_DASHBOARD=1
+HERMES_DASHBOARD_HOST=0.0.0.0
+HERMES_DASHBOARD_PORT=9119
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_USER:-admin}
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_PASSWORD}
+HERMES_DASHBOARD_TUI=1
+HERMESENV
+        else
+          # Keep key in sync with CommunityOS .env when present
+          if grep -q '^API_SERVER_KEY=' "${hermes_envf}" 2>/dev/null; then
+            sed -i "s/^API_SERVER_KEY=.*/API_SERVER_KEY=${HERMES_API_SERVER_KEY}/" "${hermes_envf}"
+          else
+            echo "API_SERVER_KEY=${HERMES_API_SERVER_KEY}" >> "${hermes_envf}"
+          fi
+        fi
+        # Ollama reachability hint (non-fatal)
+        # Ollama is started after app_enable under the hermes profile (shared
+        # with AI, without requiring Open WebUI). Model check runs then.
+        :
+      fi
+
+      app_enable "${id}"
+      # Only clear enabled flag if install does not reach explicit success.
+      # Healthy Nextcloud must not lose nextcloud.enabled because of a later non-fatal check.
+      # Capture app id in a non-local so the EXIT trap remains safe under set -u
+      # after function-local variables are torn down on failure.
+      _COS_APP_INSTALL_ID="${id}"
+      _APP_INSTALL_OK=0
+      _app_install_cleanup() {
+        local _rc=$?
+        local _aid="${_COS_APP_INSTALL_ID:-}"
+        if [[ "${_APP_INSTALL_OK:-0}" -ne 1 ]]; then
+          if [[ -n "${_aid}" ]]; then
+            if declare -F app_disable_flag >/dev/null 2>&1; then
+              app_disable_flag "${_aid}" 2>/dev/null || true
+            else
+              rm -f "${COMMUNITYOS_ROOT}/runtime/apps/${_aid}.enabled" 2>/dev/null || true
+            fi
+            if [[ "${_rc}" -ne 0 ]]; then
+              log_warn "Install failed — cleared enabled flag for ${_aid} (data retained under data/${_aid}/)"
+            fi
+          fi
+        fi
+        unset _COS_APP_INSTALL_ID 2>/dev/null || true
+        trap - EXIT
+        return "${_rc}"
+      }
+      trap '_app_install_cleanup' EXIT
+
+      app_update_dns
+      # Optional apps may need profiled shared DBs even when core service is off
+      case "${id}" in
+        nextcloud)
+          compose --profile website up -d mariadb 2>/dev/null || true
+          # Overlay is selected (enabled flag set); prepare DB then schema can see nextcloud
+          if ! prepare_nextcloud_database; then
+            log_fail "Nextcloud database preparation failed — not starting Files."
+            exit 1
+          fi
+          ;;
+        peertube)
+          # Postgres is shared infra for Chat + PeerTube.
+          # compose.yaml must list: profiles: ["chat", "peertube"]
+          # service_profiles_from_flags adds "peertube" when .enabled exists.
+          if ! grep -q 'peertube' "${COMMUNITYOS_ROOT}/compose.yaml" 2>/dev/null \
+             || ! grep -A2 '^  postgres:' "${COMMUNITYOS_ROOT}/compose.yaml" 2>/dev/null | grep -q peertube; then
+            log_fail "compose.yaml postgres service is missing the peertube profile."
+            echo "  Expected under postgres:  profiles: [\"chat\", \"peertube\"]"
+            echo "  Update ${COMMUNITYOS_ROOT}/compose.yaml from the release package, then retry."
+            exit 1
+          fi
+          # Sync COMPOSE_PROFILES so peertube is active for subsequent compose up.
+          if declare -F service_sync_compose_profiles >/dev/null 2>&1; then
+            service_sync_compose_profiles
+          fi
+          log_info "Starting shared Postgres for PeerTube (profile peertube, no Chat stack)..."
+          # Start from base compose only — avoids overlay depends_on during bootstrap.
+          if ! docker compose -f "${COMMUNITYOS_ROOT}/compose.yaml" \
+                --env-file "${COMMUNITYOS_ROOT}/.env" \
+                --profile peertube \
+                up -d postgres; then
+            log_fail "Could not start communityos-postgres under profile peertube."
+            echo "  COMPOSE_PROFILES=$(grep '^COMPOSE_PROFILES=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || echo unset)"
+            echo "  Services visible with --profile peertube:"
+            docker compose -f "${COMMUNITYOS_ROOT}/compose.yaml" \
+              --env-file "${COMMUNITYOS_ROOT}/.env" \
+              --profile peertube \
+              config --services 2>/dev/null || true
+            exit 1
+          fi
+          if ! wait_for_container_healthy communityos-postgres 90; then
+            log_fail "Postgres did not become healthy — required for PeerTube"
+            docker logs communityos-postgres --tail 30 2>&1 || true
+            exit 1
+          fi
+          log_ok "Postgres is healthy"
+          load_env
+          if [[ -z "${POSTGRES_PASSWORD:-}" || -z "${PEERTUBE_DB_PASSWORD:-}" ]]; then
+            log_fail "Missing POSTGRES_PASSWORD or PEERTUBE_DB_PASSWORD in .env"
+            exit 1
+          fi
+          local _pg_user="${POSTGRES_USER:-communityos}"
+          log_info "Ensuring PeerTube database role and database exist..."
+          if ! docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" communityos-postgres \
+                psql -U "${_pg_user}" -d postgres -tc "SELECT 1 FROM pg_roles WHERE rolname='peertube'" 2>/dev/null \
+                | grep -q 1; then
+            if ! docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" communityos-postgres \
+                  psql -U "${_pg_user}" -d postgres \
+                  -c "CREATE ROLE peertube LOGIN PASSWORD '${PEERTUBE_DB_PASSWORD}'"; then
+              log_fail "Could not create PeerTube DB role."
+              exit 1
+            fi
+          else
+            docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" communityos-postgres \
+              psql -U "${_pg_user}" -d postgres \
+              -c "ALTER ROLE peertube WITH PASSWORD '${PEERTUBE_DB_PASSWORD}'" >/dev/null 2>&1 || true
+          fi
+          if ! docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" communityos-postgres \
+                psql -U "${_pg_user}" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='peertube'" 2>/dev/null \
+                | grep -q 1; then
+            if ! docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" communityos-postgres \
+                  psql -U "${_pg_user}" -d postgres \
+                  -c "CREATE DATABASE peertube OWNER peertube"; then
+              log_fail "Could not create PeerTube database."
+              exit 1
+            fi
+          fi
+          log_ok "PeerTube database ready"
+          ;;
+        hermes)
+          # Ollama is shared infra for AI + Hermes.
+          # compose.yaml must list: profiles: ["ai", "hermes"]
+          if ! grep -A2 '^  ollama:' "${COMMUNITYOS_ROOT}/compose.yaml" 2>/dev/null | grep -q hermes; then
+            log_fail "compose.yaml ollama service is missing the hermes profile."
+            echo "  Expected under ollama:  profiles: [\"ai\", \"hermes\"]"
+            echo "  Update ${COMMUNITYOS_ROOT}/compose.yaml from the release package, then retry."
+            exit 1
+          fi
+          if declare -F service_sync_compose_profiles >/dev/null 2>&1; then
+            service_sync_compose_profiles
+          fi
+          log_info "Starting shared Ollama for Hermes (profile hermes, no Open WebUI)..."
+          if ! docker compose -f "${COMMUNITYOS_ROOT}/compose.yaml" \
+                --env-file "${COMMUNITYOS_ROOT}/.env" \
+                --profile hermes \
+                up -d ollama; then
+            log_fail "Could not start communityos-ollama under profile hermes."
+            echo "  COMPOSE_PROFILES=$(grep '^COMPOSE_PROFILES=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || echo unset)"
+            echo "  Services visible with --profile hermes:"
+            docker compose -f "${COMMUNITYOS_ROOT}/compose.yaml" \
+              --env-file "${COMMUNITYOS_ROOT}/.env" \
+              --profile hermes \
+              config --services 2>/dev/null || true
+            exit 1
+          fi
+          if ! wait_for_container_healthy communityos-ollama 90; then
+            # Ollama healthcheck runs "ollama list"; accept running if still starting
+            local _ost
+            _ost="$(docker inspect -f '{{.State.Status}}' communityos-ollama 2>/dev/null || echo missing)"
+            if [[ "${_ost}" != "running" ]]; then
+              log_fail "Ollama did not become ready — required for Hermes"
+              docker logs communityos-ollama --tail 30 2>&1 || true
+              exit 1
+            fi
+          fi
+          log_ok "Ollama is ready"
+          # Non-fatal model hint (models are optional at install time)
+          local models
+          models="$(docker exec communityos-ollama ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | paste -sd', ' - || true)"
+          if [[ -z "${models}" ]]; then
+            echo
+            echo "No Ollama models found yet. Pull at least one before using Hermes, e.g.:"
+            echo "  sudo docker exec -it communityos-ollama ollama pull llama3.2"
+            echo "Then set model.model in data/hermes/config.yaml to match."
+            echo
+          fi
+          ;;
+      esac
+      compose up -d
+      compose up -d --force-recreate caddy 2>/dev/null || compose up -d caddy
+      if [[ "${id}" == "maps" ]]; then
+        # Explicitly create/start Maps services from the overlay (not only base compose.yaml)
+        compose up -d --force-recreate martin maps-api
+        # Verify both containers exist
+        if ! docker inspect communityos-martin >/dev/null 2>&1; then
+          log_fail "communityos-martin did not start"
+          exit 1
+        fi
+        if ! docker inspect communityos-maps-api >/dev/null 2>&1; then
+          log_fail "communityos-maps-api did not start"
+          echo "Check:  ls -l ${COMMUNITYOS_ROOT}/apps/maps.yaml ${COMMUNITYOS_ROOT}/bin/pmtiles ${COMMUNITYOS_ROOT}/scripts/maps-api.py"
+          echo "Compose files used:"
+          compose config --services 2>/dev/null || true
+          exit 1
+        fi
+        log_ok "Maps containers: communityos-martin, communityos-maps-api"
+      fi
+      if declare -F tls_mode_get >/dev/null 2>&1 && [[ "$(tls_mode_get)" == "acme_dns01" ]]; then
+    echo "  Certificates and DNS updated for optional apps (public Let's Encrypt / DNS-01)."
+  else
+    echo "  Certificates and DNS updated for optional apps (same CommunityOS CA)."
+  fi
+      if [[ "${id}" == "nextcloud" ]]; then
+        chown -R 33:33 "${COMMUNITYOS_ROOT}/data/nextcloud" 2>/dev/null || true
+        load_env
+        local nc_pass
+        nc_pass="$(compose_nextcloud_mysql_password)"
+        [[ -z "${nc_pass}" ]] && nc_pass="${NEXTCLOUD_DB_PASSWORD}"
+        # Stop app before rewriting config so nothing races with the old password
+        docker stop communityos-nextcloud >/dev/null 2>&1 || true
+        repair_nextcloud_config_password "${nc_pass}" || exit 1
+        log_info "Recreating Nextcloud container…"
+        docker rm -f communityos-nextcloud >/dev/null 2>&1 || true
+        compose up -d --no-deps --force-recreate nextcloud
+        # Verify using config.php credentials (not MYSQL_PASSWORD alone)
+        if ! verify_nextcloud_config_db; then
+          exit 1
+        fi
+        if ! ensure_nextcloud_schema; then
+          exit 1
+        fi
+        if ! verify_nextcloud_config_db; then
+          exit 1
+        fi
+        if ! verify_nextcloud_status_php; then
+          exit 1
+        fi
+        if ! wait_for_container_healthy communityos-nextcloud 60; then
+          log_fail "Docker healthcheck still not healthy after status.php 200"
+          docker logs communityos-nextcloud --tail 40 2>&1 | sed -E 's/(password[=: ]*)[^[:space:]]+/\1***/gi' || true
+          exit 1
+        fi
+        if ! ensure_nextcloud_admin; then
+          exit 1
+        fi
+        log_ok "Nextcloud is healthy"
+      fi
+      if [[ "${id}" == "peertube" ]]; then
+        load_env
+        if ! docker inspect communityos-peertube >/dev/null 2>&1; then
+          log_fail "communityos-peertube did not start"
+          compose config --services 2>/dev/null || true
+          exit 1
+        fi
+        log_info "Waiting for PeerTube container…"
+        if ! wait_for_container_healthy communityos-peertube 120; then
+          # PeerTube image may not define a Docker healthcheck; accept running
+          local _st
+          _st="$(docker inspect -f '{{.State.Status}}' communityos-peertube 2>/dev/null || echo missing)"
+          if [[ "${_st}" != "running" ]]; then
+            log_fail "PeerTube container is not running"
+            docker logs communityos-peertube --tail 40 2>&1 || true
+            exit 1
+          fi
+        fi
+        if ! ensure_peertube_admin; then
+          exit 1
+        fi
+        log_ok "PeerTube is ready"
+      fi
+  if [[ "${id}" == "jellyfin" ]]; then
+        sleep 5
+        docker start communityos-jellyfin-init >/dev/null 2>&1 || true
+      fi
+      if [[ "${id}" == "hermes" ]]; then
+        # Ensure hermes service from overlay is up (API server must be configured, not just gateway)
+        compose up -d --no-deps hermes 2>/dev/null || compose up -d hermes || true
+        load_env 2>/dev/null || true
+        local key="${HERMES_API_SERVER_KEY:-}"
+        local i=0 ready=0
+        log_info "Waiting for Hermes API (:8642) and dashboard (:9119)..."
+        until [[ "${i}" -gt 90 ]]; do
+          i=$((i + 1))
+          if ! docker exec communityos-hermes true >/dev/null 2>&1; then
+            sleep 2
+            continue
+          fi
+          if ! docker exec communityos-hermes curl -fsS --connect-timeout 2 http://127.0.0.1:8642/health >/dev/null 2>&1; then
+            sleep 2
+            continue
+          fi
+          if [[ -z "${key}" ]] \
+             || ! docker exec communityos-hermes curl -fsS --connect-timeout 2 \
+                  -H "Authorization: Bearer ${key}" \
+                  http://127.0.0.1:8642/v1/models >/dev/null 2>&1; then
+            sleep 2
+            continue
+          fi
+          # Dashboard: any HTTP response means the server is up (401 = auth required = good)
+          local dash_code
+          dash_code="$(docker exec communityos-hermes curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 http://127.0.0.1:9119/ 2>/dev/null || echo 000)"
+          if [[ "${dash_code}" =~ ^(200|301|302|401|403)$ ]]; then
+            ready=1
+            break
+          fi
+          sleep 2
+        done
+        if [[ "${ready}" -ne 1 ]]; then
+          log_fail "Hermes API and/or dashboard did not become ready."
+          echo "Check:"
+          echo "  docker logs communityos-hermes --tail 100"
+          echo "  grep HERMES_ ${COMMUNITYOS_ROOT}/.env"
+          echo "  docker exec communityos-hermes curl -sS http://127.0.0.1:8642/health"
+          echo "  docker exec communityos-hermes curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9119/"
+          exit 1
+        fi
+        log_ok "Hermes API ready (:8642) and dashboard responding (:9119)"
+
+      fi
+      # Success — keep enabled flag (even if EXIT fires, _APP_INSTALL_OK protects it)
+      _APP_INSTALL_OK=1
+      trap - EXIT
+      log_ok "$(app_meta "${id}" name) installed."
+      echo
+      echo "  $(app_meta "${id}" url)"
+      echo "  Data: $(app_meta "${id}" data)"
+      if [[ "${id}" == "hermes" ]]; then
+        load_env 2>/dev/null || true
+        echo
+        echo "  Three-layer AI layout:"
+        echo "    Open WebUI          https://${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}     (everyday chat)"
+        echo "    Hermes Dashboard    https://${DOMAIN_HERMES:-hermes.${DOMAIN_BASE:-community.home.arpa}} (admin only)"
+        echo "    Hermes API          http://hermes:8642/v1              (internal)"
+        echo
+        echo "  Dashboard login (Hermes Basic Auth — not CommunityOS SSO):"
+        echo "    User:  ${HERMES_DASHBOARD_USER:-admin}"
+        if [[ -n "${HERMES_DASHBOARD_PASSWORD:-}" ]]; then
+          echo "    Pass:  ${HERMES_DASHBOARD_PASSWORD}"
+        else
+          echo "    Pass:  (HERMES_DASHBOARD_PASSWORD in /opt/communityos/.env)"
+        fi
+        echo "    The dashboard can show secrets and drive agent actions — admin only."
+        echo
+        echo "  Connect Open WebUI → Hermes API (optional agent chat):"
+        echo "    Admin → Settings → Connections → OpenAI → Add"
+        echo "    URL:  http://hermes:8642/v1"
+        if [[ -n "${HERMES_API_SERVER_KEY:-}" ]]; then
+          echo "    Key:  ${HERMES_API_SERVER_KEY}"
+        else
+          echo "    Key:  HERMES_API_SERVER_KEY from /opt/communityos/.env"
+        fi
+        echo "    Keep the Ollama connection for ordinary chat."
+        echo
+        echo "  Ports 8642 and 9119 are NOT published to the host/LAN."
+        echo "  Access the dashboard only via https://${DOMAIN_HERMES:-hermes.${DOMAIN_BASE:-community.home.arpa}}"
+        echo "  (CommunityOS CA). Do not expose it to the public Internet."
+      fi
+      if [[ "${id}" == "maps" ]]; then
+        echo
+        echo "  Map datasets are not included. Add .pmtiles or .mbtiles to the data directory,"
+        echo "  then run:  sudo communityos app restart maps"
+        if [[ -x "${COMMUNITYOS_ROOT}/bin/pmtiles" ]]; then
+          echo "  PMTiles CLI: ${COMMUNITYOS_ROOT}/bin/pmtiles"
+        fi
+      fi
+      echo
+      ;;
+    remove|uninstall)
+      need_root "app remove"
+      local id raw="${1:-}"
+      id="$(app_aliases_resolve "${raw}")"
+      if [[ -z "${id}" ]] || [[ -z "$(app_meta "${id}" name)" ]]; then
+        echo "Usage: communityos app remove <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+        exit 1
+      fi
+      log_info "Removing app: $(app_meta "${id}" name)..."
+      local ctn
+      ctn="$(app_meta "${id}" container)"
+      [[ -n "${ctn}" ]] && docker rm -f "${ctn}" 2>/dev/null || true
+      if [[ "${id}" == "peertube" ]]; then
+        docker rm -f communityos-peertube-redis 2>/dev/null || true
+      fi
+      app_disable_flag "${id}"
+      # Drop peertube profile from COMPOSE_PROFILES; stop shared postgres only
+      # when Chat is also disabled (Matrix still needs it otherwise).
+      if [[ "${id}" == "peertube" ]]; then
+        if [[ ! -f "${COMMUNITYOS_ROOT}/runtime/services/chat.enabled" ]]; then
+          compose stop postgres 2>/dev/null || true
+        fi
+      fi
+      if [[ "${id}" == "hermes" ]]; then
+        # Stop shared ollama only when AI stack is also disabled
+        if [[ ! -f "${COMMUNITYOS_ROOT}/runtime/services/ai.enabled" ]]; then
+          compose stop ollama 2>/dev/null || true
+        fi
+      fi
+      compose up -d --remove-orphans
+      log_ok "$(app_meta "${id}" name) removed (data under $(app_meta "${id}" data) kept)."
+      ;;
+    restart)
+      need_root "app restart"
+      local id raw="${1:-}"
+      id="$(app_aliases_resolve "${raw}")"
+      case "${id}" in
+        kiwix) docker restart communityos-kiwix 2>/dev/null || compose up -d kiwix ;;
+        maps) docker restart communityos-martin communityos-maps-api 2>/dev/null || compose up -d martin maps-api ;;
+        jellyfin) docker restart communityos-jellyfin 2>/dev/null || compose up -d jellyfin ;;
+        nextcloud) docker restart communityos-nextcloud 2>/dev/null || compose up -d nextcloud ;;
+        peertube) docker restart communityos-peertube communityos-peertube-redis 2>/dev/null || compose up -d peertube peertube-redis ;;
+        hermes) docker restart communityos-hermes 2>/dev/null || compose up -d hermes ;;
+        *) echo "Usage: communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"; exit 1 ;;
+      esac
+      log_ok "App restarted."
+      ;;
+    list|"")
+      cmd_apps
+      ;;
+    *)
+      echo "Usage:"
+      echo "  communityos apps"
+      echo "  communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+      echo "  communityos app remove  <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+      echo "  communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+      exit 1
+      ;;
+  esac
+}
+
+
+cmd_maps() {
+  ensure_installed
+  local sub="${1:-}"
+  shift || true
+  case "${sub}" in
+    download)
+      need_root "maps download"
+      cmd_maps_download "$@"
+      ;;
+    datasets|list)
+      cmd_maps_datasets "$@"
+      ;;
+    help|"")
+      cat <<'H'
+CommunityOS Maps
+
+Usage:
+  communityos maps download --name <id> --bbox minLon,minLat,maxLon,maxLat [--maxzoom 14]
+  communityos maps download --preset los-angeles
+  communityos maps datasets
+
+Presets: los-angeles, california, united-states, new-york
+
+Downloads require internet (remote PMTiles source). After install, tiles are local.
+Datasets are stored in /opt/communityos/data/maps/
+H
+      ;;
+    *)
+      echo "Unknown maps command: ${sub}"
+      echo "Try:  communityos maps help"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_maps_datasets() {
+  ensure_installed
+  local dir="${COMMUNITYOS_ROOT}/data/maps"
+  echo
+  echo "Maps datasets (${dir})"
+  echo "======================"
+  if compgen -G "${dir}/*.pmtiles" >/dev/null || compgen -G "${dir}/*.mbtiles" >/dev/null; then
+    ls -lh "${dir}"/*.pmtiles "${dir}"/*.mbtiles 2>/dev/null | awk '{print "  " $9 "  (" $5 ")"}'
+  else
+    echo "  (none yet)"
+  fi
+  echo
+}
+
+cmd_maps_download() {
+  need_root "maps download"
+  ensure_installed
+  if ! app_is_enabled maps 2>/dev/null; then
+    log_fail "Maps is not installed."
+    echo "Install:  sudo communityos app install maps"
+    exit 1
+  fi
+  if declare -F install_pmtiles_cli >/dev/null 2>&1; then
+    install_pmtiles_cli
+  fi
+  local name="" bbox="" maxzoom="14" preset="" source="" overwrite="0"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="${2:-}"; shift 2 ;;
+      --bbox) bbox="${2:-}"; shift 2 ;;
+      --maxzoom) maxzoom="${2:-}"; shift 2 ;;
+      --preset) preset="${2:-}"; shift 2 ;;
+      --source) source="${2:-}"; shift 2 ;;
+      --overwrite) overwrite="1"; shift ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+  done
+  case "${preset}" in
+    los-angeles)
+      name="${name:-los-angeles}"
+      bbox="${bbox:--118.95,33.55,-117.55,34.85}"
+      maxzoom="${maxzoom:-14}"
+      ;;
+    california)
+      name="${name:-california}"
+      bbox="${bbox:--124.5,32.5,-114.1,42.1}"
+      maxzoom="${maxzoom:-12}"
+      ;;
+    united-states|usa)
+      name="${name:-united-states}"
+      bbox="${bbox:--125.0,24.0,-66.5,49.5}"
+      maxzoom="${maxzoom:-10}"
+      ;;
+    new-york|nyc)
+      name="${name:-new-york}"
+      bbox="${bbox:--74.3,40.45,-73.65,41.0}"
+      maxzoom="${maxzoom:-14}"
+      ;;
+    "")
+      ;;
+    *)
+      log_fail "Unknown preset: ${preset}"
+      exit 1
+      ;;
+  esac
+  if [[ -z "${name}" || -z "${bbox}" ]]; then
+    echo "Usage: communityos maps download --preset los-angeles"
+    echo "   or: communityos maps download --name region --bbox minLon,minLat,maxLon,maxLat [--maxzoom 14]"
+    exit 1
+  fi
+  load_env 2>/dev/null || true
+  source="${source:-${PMTILES_SOURCE_URL:-}}"
+  if [[ -z "${source}" && -f "${COMMUNITYOS_ROOT}/config/maps-source.env" ]]; then
+    # shellcheck disable=SC1090
+    source "${COMMUNITYOS_ROOT}/config/maps-source.env" 2>/dev/null || true
+    source="${PMTILES_SOURCE_URL:-}"
+  fi
+  source="${source:-https://build.protomaps.com/20260807.pmtiles}"
+  local dest="${COMMUNITYOS_ROOT}/data/maps/${name}.pmtiles"
+  local partial="${COMMUNITYOS_ROOT}/data/maps/.${name}.pmtiles.partial"
+  local pmtiles="${COMMUNITYOS_ROOT}/bin/pmtiles"
+  if [[ ! -x "${pmtiles}" ]]; then
+    log_fail "pmtiles CLI missing at ${pmtiles}"
+    exit 1
+  fi
+  if [[ -f "${dest}" && "${overwrite}" != "1" ]]; then
+    log_fail "Dataset already exists: ${dest}"
+    echo "Use --overwrite to replace it."
+    exit 1
+  fi
+  mkdir -p "${COMMUNITYOS_ROOT}/data/maps"
+  log_info "Downloading map dataset '${name}' (internet required)…"
+  echo "  bbox:    ${bbox}"
+  echo "  maxzoom: ${maxzoom}"
+  echo "  source:  ${source}"
+  echo "  output:  ${dest}"
+  echo
+  if ! "${pmtiles}" extract "${source}" "${partial}" --bbox="${bbox}" --maxzoom="${maxzoom}"; then
+    rm -f "${partial}"
+    log_fail "pmtiles extract failed"
+    exit 1
+  fi
+  log_info "Verifying…"
+  if ! "${pmtiles}" verify "${partial}"; then
+    rm -f "${partial}"
+    log_fail "pmtiles verify failed"
+    exit 1
+  fi
+  mv -f "${partial}" "${dest}"
+  log_info "Refreshing Martin…"
+  docker restart communityos-martin >/dev/null 2>&1 || true
+  log_ok "Dataset ready: ${dest}"
+  echo
+  echo "  Open: https://${DOMAIN_MAPS:-maps.${DOMAIN_BASE:-community.home.arpa}}"
+  echo "  Source should list: ${name}"
+  echo
+}
+
+# --- Matrix federation (optional; default off) ---
+# Modes: off | private | public
+#   off      — invite-only local Chat (default)
+#   private  — CommunityOS-to-CommunityOS / trusted LAN federation
+#   public   — global Matrix federation (public DNS + trusted TLS)
+
+matrix_federation_mode() {
+  # Read-only resolution of current mode. Never writes.
+  # Prefer .env (source of truth after enable/disable) over ambient shell env.
+  local mode="" enabled=""
+  if [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    mode="$(grep -E '^MATRIX_FEDERATION_MODE=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    enabled="$(grep -E '^MATRIX_FEDERATION_ENABLED=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  fi
+  mode="${mode:-${MATRIX_FEDERATION_MODE:-}}"
+  enabled="${enabled:-${MATRIX_FEDERATION_ENABLED:-}}"
+
+  mode="${mode%\'}"; mode="${mode#\'}"
+  enabled="${enabled%\'}"; enabled="${enabled#\'}"
+  mode="${mode,,}"
+  enabled="${enabled,,}"
+
+  case "${mode}" in
+    off|private|public) printf '%s\n' "${mode}"; return 0 ;;
+  esac
+
+  # Legacy: ENABLED without MODE
+  case "${enabled}" in
+    1|true|yes|on) printf 'public\n'; return 0 ;;
+    *) printf 'off\n'; return 0 ;;
+  esac
+}
+
+matrix_federation_enabled() {
+  case "$(matrix_federation_mode)" in
+    private|public) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Write MODE + derived ENABLED. Privileged callers only.
+matrix_set_federation_mode() {
+  local mode="$1"
+  local envf="${COMMUNITYOS_ROOT}/.env"
+  local enabled="false"
+  case "${mode}" in
+    private|public) enabled="true" ;;
+    off) enabled="false" ;;
+    *) log_fail "Invalid federation mode: ${mode}"; return 1 ;;
+  esac
+
+  if grep -q '^MATRIX_FEDERATION_MODE=' "${envf}" 2>/dev/null; then
+    sed -i "s/^MATRIX_FEDERATION_MODE=.*/MATRIX_FEDERATION_MODE=${mode}/" "${envf}"
+  else
+    echo "MATRIX_FEDERATION_MODE=${mode}" >> "${envf}"
+  fi
+  if grep -q '^MATRIX_FEDERATION_ENABLED=' "${envf}" 2>/dev/null; then
+    sed -i "s/^MATRIX_FEDERATION_ENABLED=.*/MATRIX_FEDERATION_ENABLED=${enabled}/" "${envf}"
+  else
+    echo "MATRIX_FEDERATION_ENABLED=${enabled}" >> "${envf}"
+  fi
+}
+
+# Privileged only (start/restart/update/doctor/enable/disable) — never call from status
+ensure_matrix_federation_env() {
+  local envf="${COMMUNITYOS_ROOT}/.env"
+  [[ -f "${envf}" ]] || return 0
+
+  local has_mode=0 has_enabled=0
+  grep -q '^MATRIX_FEDERATION_MODE=' "${envf}" 2>/dev/null && has_mode=1
+  grep -q '^MATRIX_FEDERATION_ENABLED=' "${envf}" 2>/dev/null && has_enabled=1
+
+  if [[ "${has_mode}" -eq 0 && "${has_enabled}" -eq 0 ]]; then
+    echo "MATRIX_FEDERATION_MODE=off" >> "${envf}"
+    echo "MATRIX_FEDERATION_ENABLED=false" >> "${envf}"
+    return 0
+  fi
+
+  if [[ "${has_mode}" -eq 0 && "${has_enabled}" -eq 1 ]]; then
+    local en
+    en="$(grep -E '^MATRIX_FEDERATION_ENABLED=' "${envf}" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    en="${en%\'}"; en="${en#\'}"; en="${en,,}"
+    local mode="off"
+    case "${en}" in
+      1|true|yes|on) mode="public" ;;
+    esac
+    echo "MATRIX_FEDERATION_MODE=${mode}" >> "${envf}"
+    # Keep ENABLED as-is
+    return 0
+  fi
+
+  if [[ "${has_mode}" -eq 1 && "${has_enabled}" -eq 0 ]]; then
+    local mode
+    mode="$(grep -E '^MATRIX_FEDERATION_MODE=' "${envf}" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    mode="${mode%\'}"; mode="${mode#\'}"; mode="${mode,,}"
+    local enabled="false"
+    case "${mode}" in
+      private|public) enabled="true" ;;
+    esac
+    echo "MATRIX_FEDERATION_ENABLED=${enabled}" >> "${envf}"
+  fi
+}
+
+matrix_federation_backup_pre_change() {
+  local stamp dir
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  dir="${COMMUNITYOS_ROOT}/backups/federation-${stamp}"
+  mkdir -p "${dir}"
+  cp -a "${COMMUNITYOS_ROOT}/.env" "${dir}/env" 2>/dev/null || true
+  docker exec communityos-synapse cat /data/homeserver.yaml > "${dir}/homeserver.yaml" 2>/dev/null || true
+  [[ -f "${COMMUNITYOS_ROOT}/compose.yaml" ]] && cp -a "${COMMUNITYOS_ROOT}/compose.yaml" "${dir}/compose.yaml" 2>/dev/null || true
+  echo "${dir}"
+}
+
+matrix_apply_synapse_federation() {
+  # Synapse entrypoint regenerates listeners from MATRIX_FEDERATION_MODE on every
+  # container start. A plain "docker restart" keeps the old container env and
+  # overwrites any in-place homeserver.yaml edit. Always recreate so .env is
+  # injected, then verify the federation resource is present when expected.
+  local mode
+  mode="$(matrix_federation_mode)"
+  local want_fed=0
+  case "${mode}" in
+    private|public) want_fed=1 ;;
+  esac
+
+  log_info "Applying federation mode '${mode}' to Chat (Synapse)..."
+  # Recreate picks up MATRIX_FEDERATION_MODE / ENABLED from .env via compose --env-file
+  if ! compose up -d --no-deps --force-recreate synapse; then
+    log_fail "Could not recreate Synapse with federation mode=${mode}"
+    return 1
+  fi
+
+  local i=0
+  until docker exec communityos-synapse curl -fsS http://127.0.0.1:8008/_matrix/client/versions >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [[ "${i}" -gt 60 ]]; then
+      log_fail "Chat did not become ready after federation change."
+      return 1
+    fi
+    sleep 2
+  done
+
+  # Explicitly ensure listeners match the desired mode (belt-and-suspenders:
+  # entrypoint should already have done this from env; patch if drift).
+  docker exec -u 0 communityos-synapse python3 -c "
+import yaml, sys
+path = '/data/homeserver.yaml'
+with open(path) as f:
+    c = yaml.safe_load(f)
+fed = (${want_fed} == 1)
+names = ['client', 'federation'] if fed else ['client']
+changed = False
+listeners = c.get('listeners') or []
+if not listeners:
+    c['listeners'] = [{
+        'port': 8008,
+        'type': 'http',
+        'bind_addresses': ['0.0.0.0'],
+        'resources': [{'names': names, 'compress': False}],
+    }]
+    changed = True
+else:
+    for L in listeners:
+        resources = L.get('resources') or []
+        if not resources:
+            L['resources'] = [{'names': names, 'compress': False}]
+            changed = True
+            continue
+        for r in resources:
+            cur = list(r.get('names') or [])
+            if cur != names:
+                r['names'] = names
+                changed = True
+if bool(c.get('allow_public_rooms_over_federation')) != bool(fed):
+    c['allow_public_rooms_over_federation'] = bool(fed)
+    changed = True
+if changed:
+    with open(path, 'w') as f:
+        yaml.dump(c, f, default_flow_style=False)
+    print('federation-patched=' + ('on' if fed else 'off'))
+    sys.exit(2)
+print('federation=' + ('on' if fed else 'off'))
+" 
+  local py_rc=$?
+  if [[ "${py_rc}" -eq 2 ]]; then
+    # Config was drifted; soft-restart Synapse process inside the container is
+    # awkward — recreate once more so entrypoint + our patch agree. Prefer
+    # sending SIGHUP is not supported; restart the container without recreate
+    # would re-run entrypoint with the same (correct) env and re-read yaml.
+    log_info "Listener resources adjusted; reloading Chat..."
+    docker restart communityos-synapse >/dev/null 2>&1 || return 1
+    i=0
+    until docker exec communityos-synapse curl -fsS http://127.0.0.1:8008/_matrix/client/versions >/dev/null 2>&1; do
+      i=$((i + 1))
+      if [[ "${i}" -gt 60 ]]; then
+        log_fail "Chat did not become ready after listener reload."
+        return 1
+      fi
+      sleep 2
+    done
+  elif [[ "${py_rc}" -ne 0 ]]; then
+    log_fail "Could not verify/apply Synapse federation listeners."
+    return 1
+  fi
+
+  # Final verification
+  local res
+  res="$(docker exec communityos-synapse python3 -c '
+import yaml
+c=yaml.safe_load(open("/data/homeserver.yaml"))
+for L in c.get("listeners") or []:
+    for r in L.get("resources") or []:
+        print(",".join(r.get("names") or []))
+' 2>/dev/null | head -1 || echo "")"
+  if [[ "${want_fed}" -eq 1 ]]; then
+    if [[ "${res}" != *federation* ]]; then
+      log_fail "Federation resource still missing after apply (listeners: ${res:-none})."
+      return 1
+    fi
+    log_ok "Synapse federation resource active (mode=${mode})"
+  else
+    if [[ "${res}" == *federation* ]]; then
+      log_fail "Federation resource still present while mode=off (listeners: ${res})."
+      return 1
+    fi
+    log_ok "Synapse federation resource off (mode=off)"
+  fi
+
+  docker restart communityos-caddy >/dev/null 2>&1 || true
+  return 0
+}
+
+cmd_matrix() {
+  ensure_installed
+  local sub="${1:-}"
+  shift || true
+  case "${sub}" in
+    invite)
+      cmd_matrix_invite "$@"
+      ;;
+    federation)
+      cmd_matrix_federation "$@"
+      ;;
+    help|"")
+      cat <<'H'
+CommunityOS Matrix
+
+Usage:
+  communityos matrix invite
+  communityos matrix federation status
+  communityos matrix federation enable --private
+  communityos matrix federation enable --public
+  communityos matrix federation disable
+
+invite
+  Single-use registration invitation. Public signup stays closed without a token.
+
+federation
+  Optional federation (default: off).
+  --private  trusted CommunityOS-to-CommunityOS / LAN
+  --public   global Matrix network (public DNS + trusted TLS)
+H
+      ;;
+    *)
+      echo "Unknown matrix command: ${sub}"
+      echo "Try:  communityos matrix help"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_matrix_federation() {
+  ensure_installed
+  local action="${1:-status}"
+  shift || true
+  case "${action}" in
+    status)  cmd_matrix_federation_status ;;
+    enable)  need_root "matrix federation enable"; cmd_matrix_federation_enable "$@" ;;
+    disable) need_root "matrix federation disable"; cmd_matrix_federation_disable ;;
+    help)
+      cat <<'H'
+CommunityOS Matrix federation
+
+  communityos matrix federation status
+  communityos matrix federation enable --private
+  communityos matrix federation enable --public
+  communityos matrix federation disable
+
+Modes:
+  off      default — invite-only local Chat
+  private  trusted CommunityOS / LAN peers (allows .home.arpa, local CA)
+  public   global Matrix federation (requires public DNS + Internet-trusted TLS)
+
+Default is off. See docs/MATRIX_FEDERATION.md
+H
+      ;;
+    *)
+      echo "Unknown federation command: ${action}"
+      echo "Try:  communityos matrix federation status"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_matrix_federation_status() {
+  # READ-ONLY: never create or modify configuration files
+  load_env 2>/dev/null || true
+
+  local domain="${DOMAIN_CHAT:-}"
+  if [[ -z "${domain}" ]] && [[ -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    domain="$(grep -E '^DOMAIN_CHAT=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  fi
+  domain="${domain%\'}"; domain="${domain#\'}"
+  domain="${domain:-${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}}"
+
+  local mode
+  mode="$(matrix_federation_mode)"
+  local enabled="no"
+  case "${mode}" in
+    private|public) enabled="yes" ;;
+  esac
+
+  local config_note=""
+  if [[ ! -f "${COMMUNITYOS_ROOT}/.env" ]]; then
+    config_note="no .env found (default off)"
+  elif ! grep -qE '^MATRIX_FEDERATION_(MODE|ENABLED)=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+    config_note="federation keys missing (treated as off)"
+  fi
+
+  local dns_ok="unknown" tls_note="n/a" fed_ep="disabled" res="-"
+  if getent hosts "${domain}" >/dev/null 2>&1; then
+    dns_ok="resolves"
+  else
+    dns_ok="does not resolve"
+  fi
+
+  if docker exec communityos-synapse true >/dev/null 2>&1; then
+    res="$(docker exec communityos-synapse python3 -c '
+import yaml
+c=yaml.safe_load(open("/data/homeserver.yaml"))
+for L in c.get("listeners") or []:
+    for r in L.get("resources") or []:
+        print(",".join(r.get("names") or []))
+' 2>/dev/null | head -1 || echo "-")"
+    if [[ "${res}" == *federation* ]]; then
+      fed_ep="active via https://${domain}/_matrix/federation/..."
+    else
+      fed_ep="Synapse client-only (federation resource off)"
+    fi
+  else
+    res="Chat not running"
+    fed_ep="Chat not running"
+  fi
+
+  case "${mode}" in
+    private)
+      if [[ "${domain}" == *.home.arpa ]] || [[ "${domain}" == *.local ]]; then
+        tls_note="local name — peers must trust CommunityOS CA (or pin cert)"
+      else
+        tls_note="private mode — peers may use local or pinned trust"
+      fi
+      ;;
+    public)
+      if [[ "${domain}" == *.home.arpa ]] || [[ "${domain}" == *.local ]]; then
+        tls_note="local name — not valid for public federation"
+      else
+        tls_note="public name — requires Internet-trusted certificate for peers"
+      fi
+      ;;
+    *)
+      tls_note="n/a (federation off)"
+      ;;
+  esac
+
+  echo "Federation"
+  echo "----------"
+  echo "  Mode:                 ${mode}"
+  echo "  Enabled:              ${enabled}"
+  echo "  Server name:          ${domain}"
+  echo "  DNS:                  ${dns_ok}"
+  echo "  TLS note:             ${tls_note}"
+  echo "  Federation endpoint:  ${fed_ep}"
+  if [[ -n "${config_note}" ]]; then
+    echo "  Config:               ${config_note}"
+  fi
+  if [[ "${mode}" != "off" ]]; then
+    echo
+    echo "  Well-known:"
+    echo "    https://${domain}/.well-known/matrix/server"
+    echo "    https://${domain}/.well-known/matrix/client"
+  fi
+  echo
+  case "${mode}" in
+    off)
+      echo "Federation is off (invite-only local Chat)."
+      echo "Enable with:"
+      echo "  sudo communityos matrix federation enable --private"
+      echo "  sudo communityos matrix federation enable --public"
+      ;;
+    private)
+      echo "Private federation: trusted CommunityOS / LAN peers."
+      echo "Peers must resolve ${domain} and trust your CA (or pin the certificate)."
+      ;;
+    public)
+      echo "Public federation: global Matrix network."
+      echo "Requires public DNS and Internet-trusted TLS."
+      ;;
+  esac
+}
+
+cmd_matrix_federation_enable() {
+  local mode=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --private|private) mode="private"; shift ;;
+      --public|public)   mode="public";  shift ;;
+      -h|--help|help)
+        cat <<'H'
+Usage:
+  sudo communityos matrix federation enable --private
+  sudo communityos matrix federation enable --public
+
+  --private  CommunityOS-to-CommunityOS / trusted LAN
+             allows .home.arpa and private CA trust
+  --public   global Matrix federation
+             requires public DNS and Internet-trusted TLS
+H
+        return 0
+        ;;
+      *)
+        echo "Unknown option: $1"
+        echo "Use:  communityos matrix federation enable --private|--public"
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "${mode}" ]]; then
+    echo "Specify a federation mode:"
+    echo "  sudo communityos matrix federation enable --private"
+    echo "  sudo communityos matrix federation enable --public"
+    echo
+    echo "Default remains off until one of these is chosen."
+    exit 1
+  fi
+
+  load_env 2>/dev/null || true
+  local domain="${DOMAIN_CHAT:-}"
+  domain="${domain%\'}"; domain="${domain#\'}"
+
+  if [[ -z "${domain}" ]]; then
+    log_fail "DOMAIN_CHAT is not set in .env"
+    exit 1
+  fi
+
+  if [[ "${mode}" == "public" ]]; then
+    cat <<EOF
+
+Public Matrix federation requires:
+
+  • Public DNS for the Chat hostname
+  • Valid HTTPS that Internet peers can verify
+  • A reachable federation endpoint (usually :443 via Caddy)
+  • Ongoing operational responsibility (uptime, abuse, backups)
+
+Your Chat server name: ${domain}
+
+EOF
+    if [[ "${domain}" == *.home.arpa ]] || [[ "${domain}" == *.local ]]; then
+      log_fail "Public federation cannot use a local-only name (${domain})."
+      echo "Set DOMAIN_CHAT to a public DNS name, or use --private for LAN federation."
+      exit 1
+    fi
+    local missing=()
+    if ! getent hosts "${domain}" >/dev/null 2>&1; then
+      missing+=("public DNS for ${domain}")
+    fi
+    if ! docker exec communityos-synapse curl -fsS --connect-timeout 3 \
+         "http://127.0.0.1:8008/_matrix/client/versions" >/dev/null 2>&1; then
+      missing+=("local Chat (Synapse) is not running")
+    fi
+    if [[ "${#missing[@]}" -gt 0 ]]; then
+      log_fail "Public federation cannot be enabled."
+      echo "Missing:"
+      local m
+      for m in "${missing[@]}"; do
+        echo "  - ${m}"
+      done
+      exit 1
+    fi
+  else
+    # private
+    cat <<EOF
+
+Private Matrix federation (CommunityOS / trusted LAN):
+
+  • Intended for CommunityOS-to-CommunityOS or other trusted peers
+  • Allows .home.arpa and private DNS
+  • Peers must trust the CommunityOS CA (or pin the server certificate)
+  • No public DNS or Internet-trusted TLS required
+
+Your Chat server name: ${domain}
+
+EOF
+    if ! docker exec communityos-synapse curl -fsS --connect-timeout 3 \
+         "http://127.0.0.1:8008/_matrix/client/versions" >/dev/null 2>&1; then
+      log_fail "Private federation cannot be enabled."
+      echo "Missing:"
+      echo "  - local Chat (Synapse) is not running"
+      echo "Start CommunityOS first:  sudo communityos start"
+      exit 1
+    fi
+  fi
+
+  printf 'Continue? [y/N]: '
+  local ans
+  read -r ans || true
+  case "${ans}" in
+    y|Y|yes|YES) ;;
+    *) echo "Cancelled."; exit 0 ;;
+  esac
+
+  ensure_matrix_federation_env
+  local bak
+  bak="$(matrix_federation_backup_pre_change)"
+  log_info "Pre-change backup: ${bak}"
+
+  matrix_set_federation_mode "${mode}"
+  set -a; source "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true; set +a
+  if ! matrix_apply_synapse_federation; then
+    matrix_set_federation_mode off
+    log_fail "Could not apply federation configuration."
+    exit 1
+  fi
+  log_ok "Matrix federation enabled (${mode})"
+  echo
+  echo "  Mode:    ${mode}"
+  echo "  Server:  ${domain}"
+  echo "  Client:  https://${domain}/.well-known/matrix/client"
+  echo "  Server:  https://${domain}/.well-known/matrix/server"
+  echo
+  if [[ "${mode}" == "public" ]]; then
+    echo "Peers need public DNS and Internet-trusted TLS (not CommunityOS local_certs)."
+  else
+    echo "Peers must resolve ${domain} on your network and trust your CA (or pin the cert)."
+    echo "Distribute the CommunityOS CA to peer CommunityOS hosts or Matrix clients."
+  fi
+  echo "See docs/MATRIX_FEDERATION.md"
+  echo
+}
+
+cmd_matrix_federation_disable() {
+  ensure_matrix_federation_env
+  load_env 2>/dev/null || true
+  if ! matrix_federation_enabled; then
+    echo "Matrix federation: already off"
+    return 0
+  fi
+  local cur
+  cur="$(matrix_federation_mode)"
+  printf 'Disable Matrix federation (currently %s) and return to off? [y/N]: ' "${cur}"
+  local ans
+  read -r ans || true
+  case "${ans}" in
+    y|Y|yes|YES) ;;
+    *) echo "Cancelled."; exit 0 ;;
+  esac
+  local bak
+  bak="$(matrix_federation_backup_pre_change)"
+  log_info "Pre-change backup: ${bak}"
+  matrix_set_federation_mode off
+  set -a; source "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true; set +a
+  if ! matrix_apply_synapse_federation; then
+    log_fail "Could not disable federation in Synapse config."
+    exit 1
+  fi
+  log_ok "Matrix federation disabled"
+  echo "Chat is private and invite-only again (mode: off)."
+}
+
+cmd_matrix_invite() {
+  need_root "matrix invite"
+  ensure_installed
+
+  if ! docker exec communityos-synapse true >/dev/null 2>&1; then
+    log_fail "Chat is not running."
+    echo "Start CommunityOS first:  sudo communityos start"
+    exit 1
+  fi
+
+  load_env 2>/dev/null || true
+  local admin_user="${ADMIN_USER:-admin}"
+  local admin_pass="${ADMIN_PASS:-}"
+  local domain_chat="${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}"
+  admin_user="${admin_user%\'}"
+  admin_user="${admin_user#\'}"
+  admin_pass="${admin_pass%\'}"
+  admin_pass="${admin_pass#\'}"
+  domain_chat="${domain_chat%\'}"
+  domain_chat="${domain_chat#\'}"
+
+  if [[ -z "${admin_pass}" ]]; then
+    log_fail "Administrator password not found in .env"
+    exit 1
+  fi
+
+  # Ensure invitation-only registration is enabled (restart only if config changed)
+  local needs_restart
+  needs_restart="$(docker exec -u 0 communityos-synapse python3 -c '
+import yaml
+path = "/data/homeserver.yaml"
+with open(path) as f:
+    c = yaml.safe_load(f)
+changed = False
+for k, v in (
+    ("enable_registration", True),
+    ("registration_requires_token", True),
+    ("enable_registration_without_verification", True),
+):
+    if c.get(k) != v:
+        c[k] = v
+        changed = True
+if changed:
+    with open(path, "w") as f:
+        yaml.dump(c, f, default_flow_style=False)
+print("1" if changed else "0")
+' 2>/dev/null || echo 0)"
+
+  if [[ "${needs_restart}" == "1" ]]; then
+    log_info "Enabling invitation-only registration on Chat..."
+    docker restart communityos-synapse >/dev/null 2>&1 || true
+    local i=0
+    until docker exec communityos-synapse curl -fsS http://127.0.0.1:8008/_matrix/client/versions >/dev/null 2>&1; do
+      i=$((i + 1))
+      if [[ "${i}" -gt 45 ]]; then
+        log_fail "Chat did not become ready after enabling invitations."
+        exit 1
+      fi
+      sleep 2
+    done
+  fi
+
+  local login_json access_token token_json token uses pass_json expiry_ms expiry_human body
+  pass_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "${admin_pass}")"
+  login_json="$(docker exec communityos-synapse curl -fsS -X POST \
+    "http://127.0.0.1:8008/_matrix/client/v3/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"${admin_user}\"},\"password\":${pass_json}}" \
+    2>/dev/null || true)"
+
+  access_token="$(printf '%s' "${login_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)"
+  if [[ -z "${access_token}" ]]; then
+    log_fail "Could not authenticate as administrator to Chat."
+    echo "Check ADMIN_USER / ADMIN_PASS in /opt/communityos/.env"
+    exit 1
+  fi
+
+  # Single-use token that expires in 7 days (Synapse expects expiry_time in ms since epoch)
+  body="$(python3 -c 'import json,time; print(json.dumps({"uses_allowed":1,"expiry_time":int((time.time()+7*24*3600)*1000)}))')"
+  token_json="$(docker exec communityos-synapse curl -fsS -X POST \
+    "http://127.0.0.1:8008/_synapse/admin/v1/registration_tokens/new" \
+    -H "Authorization: Bearer ${access_token}" \
+    -H "Content-Type: application/json" \
+    -d "${body}" \
+    2>/dev/null || true)"
+
+  token="$(printf '%s' "${token_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)"
+  uses="$(printf '%s' "${token_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uses_allowed',1))" 2>/dev/null || echo 1)"
+  expiry_human="$(printf '%s' "${token_json}" | python3 -c "
+import json,sys,datetime
+d=json.load(sys.stdin)
+ms=d.get('expiry_time')
+if not ms:
+    print('7 days from issue')
+else:
+    when=datetime.datetime.utcfromtimestamp(ms/1000).strftime('%Y-%m-%d %H:%M UTC')
+    print('7 days from issue (' + when + ')')
+" 2>/dev/null || echo "7 days from issue")"
+
+  if [[ -z "${token}" ]]; then
+    log_fail "Could not create a registration token."
+    echo "Details: ${token_json}"
+    exit 1
+  fi
+
+  echo
+  echo "Matrix Invitation"
+  echo "================="
+  echo
+  echo "  Token:"
+  echo "    ${token}"
+  echo
+  echo "  Uses:"
+  echo "    ${uses} (single-use)"
+  echo
+  echo "  Expires:"
+  echo "    ${expiry_human}"
+  echo
+  echo "  Registration:"
+  echo "    https://${domain_chat}/#/register"
+  echo
+  echo "Give this invitation to the person you want to add."
+  echo "They open the registration page, enter the token, and create their account."
+  echo
+  echo "Public registration remains closed without a valid token."
+  echo
+}
+
+cmd_install() {
+  need_root install
+  # Prefer: (1) COMMUNITYOS_PKG  (2) package next to this script if it has compose.yaml
+  #          (3) /opt/communityos  (4) error
+  local pkg engine
+  if [[ -n "${COMMUNITYOS_PKG:-}" && -x "${COMMUNITYOS_PKG}/scripts/install-engine.sh" ]]; then
+    pkg="${COMMUNITYOS_PKG}"
+  else
+    local here
+    here="$(cd "$(dirname "$0")/.." && pwd)"
+    if [[ -f "${here}/compose.yaml" && -x "${here}/scripts/install-engine.sh" ]]; then
+      pkg="${here}"
+    elif [[ -x "${COMMUNITYOS_ROOT}/scripts/install-engine.sh" ]]; then
+      pkg="${COMMUNITYOS_ROOT}"
+    else
+      echo "Installer engine not found."
+      echo "Run from the extracted package:  cd communityos && sudo ./install.sh"
+      exit 1
+    fi
+  fi
+  engine="${pkg}/scripts/install-engine.sh"
+  COMMUNITYOS_ROOT="${COMMUNITYOS_ROOT:-/opt/communityos}" bash "${engine}"
+}
+
+# ---------------------------------------------------------------------------
+# Domain management (DOMAIN_BASE is the single source of truth)
+# ---------------------------------------------------------------------------
+
+cmd_domain() {
+  local sub="${1:-status}"
+  shift || true
+  case "${sub}" in
+    status|show|"") cmd_domain_status ;;
+    set)            need_root "domain set"; cmd_domain_set "$@" ;;
+    *)
+      echo "Usage:"
+      echo "  communityos domain status"
+      echo "  sudo communityos domain set <base-domain>"
+      echo
+      echo "Examples:"
+      echo "  sudo communityos domain set community.home.arpa"
+      echo "  sudo communityos domain set community.example.com"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_domain_status() {
+  ensure_installed
+  load_env 2>/dev/null || true
+  if [[ -f "${COMMUNITYOS_ROOT}/lib/domain.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${COMMUNITYOS_ROOT}/lib/domain.sh"
+    domain_load
+  fi
+  domain_derive 2>/dev/null || true
+  local base="${DOMAIN_BASE:-community.home.arpa}"
+  echo
+  echo "Domain"
+  echo "------"
+  echo "  DOMAIN_BASE:  ${base}"
+  echo
+  echo "  Active hostnames (enabled services / apps):"
+  if declare -F service_is_enabled >/dev/null 2>&1; then
+    service_is_enabled website 2>/dev/null && echo "    Website:    https://${base}"
+    service_is_enabled chat 2>/dev/null && echo "    Chat:       https://${DOMAIN_CHAT:-chat.${base}}"
+    service_is_enabled ai 2>/dev/null && echo "    Assistant:  https://${DOMAIN_AI:-ai.${base}}"
+  else
+    echo "    Website:    https://${base}"
+  fi
+  [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/kiwix.enabled" ]] && echo "    Library:    https://${DOMAIN_LIBRARY:-library.${base}}"
+  [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/maps.enabled" ]] && echo "    Maps:       https://${DOMAIN_MAPS:-maps.${base}}"
+  [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/jellyfin.enabled" ]] && echo "    Media:      https://${DOMAIN_MEDIA:-media.${base}}"
+  [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/nextcloud.enabled" ]] && echo "    Files:      https://${DOMAIN_FILES:-files.${base}}"
+  [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/peertube.enabled" ]] && echo "    Streaming:  https://${DOMAIN_STREAM:-stream.${base}}"
+  [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/hermes.enabled" ]] && echo "    Hermes:     https://${DOMAIN_HERMES:-hermes.${base}}"
+  echo
+  if domain_is_home_arpa "${base}" 2>/dev/null; then
+    echo "  Mode: local (.home.arpa)"
+  else
+    echo "  Mode: custom domain"
+    echo "  DNS: ensure these names resolve to this server on your LAN."
+    echo "  CommunityOS does not control public DNS."
+  fi
+  echo
+}
+
+cmd_domain_set() {
+  ensure_installed
+  local new_base="${1:-}"
+  if [[ -z "${new_base}" ]]; then
+    echo "Usage: sudo communityos domain set <base-domain>"
+    exit 1
+  fi
+  if [[ -f "${COMMUNITYOS_ROOT}/lib/domain.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${COMMUNITYOS_ROOT}/lib/domain.sh"
+  else
+    log_fail "lib/domain.sh missing"
+    exit 1
+  fi
+  new_base="$(domain_normalize "${new_base}")"
+  if ! domain_validate "${new_base}"; then
+    log_fail "Invalid domain: ${new_base}"
+    echo "Use a hostname like community.example.com (no spaces, URLs, or IP addresses)."
+    exit 1
+  fi
+
+  load_env 2>/dev/null || true
+  domain_load
+  local old_base="${DOMAIN_BASE:-community.home.arpa}"
+  if [[ "${new_base}" == "${old_base}" ]]; then
+    log_ok "DOMAIN_BASE is already ${new_base}"
+    cmd_domain_status
+    return 0
+  fi
+
+  echo
+  echo "Change CommunityOS domain"
+  echo "-------------------------"
+  echo "  From:  ${old_base}"
+  echo "  To:    ${new_base}"
+  echo
+  echo "This will:"
+  echo "  • update DOMAIN_BASE and all derived service hostnames"
+  echo "  • regenerate LAN DNS (dnsmasq)"
+  echo "  • reload Caddy (new hostnames / local certificates)"
+  echo "  • rewrite Element config.json"
+  echo "  • recreate optional apps that embed public URLs (if installed)"
+  echo
+  echo "Notes:"
+  echo "  • Bookmarks and clients using the old hostnames must be updated."
+  echo "  • Matrix homeserver name (Chat) is sensitive; existing rooms/users"
+  echo "    still reference the previous server name inside Synapse data."
+  echo "  • Custom domains are not automatically published to the Internet."
+  echo
+  read -rp "Continue? [y/N]: " ans
+  case "${ans}" in
+    [Yy]*) ;;
+    *) echo "Aborted."; exit 1 ;;
+  esac
+
+  local stamp backup_dir
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  backup_dir="${COMMUNITYOS_ROOT}/backups/domain-${stamp}"
+  mkdir -p "${backup_dir}"
+  cp -a "${COMMUNITYOS_ROOT}/.env" "${backup_dir}/env" 2>/dev/null || true
+  cp -a "${COMMUNITYOS_ROOT}/runtime/dnsmasq.conf" "${backup_dir}/dnsmasq.conf" 2>/dev/null || true
+  cp -a "${COMMUNITYOS_ROOT}/config.json" "${backup_dir}/config.json" 2>/dev/null || true
+  log_info "Pre-change backup: ${backup_dir}"
+
+  DOMAIN_BASE="${new_base}"
+  domain_derive
+  domain_write_env "${COMMUNITYOS_ROOT}/.env"
+  # Keep ADMIN_EMAIL aligned if it still used the old domain
+  if grep -q "^ADMIN_EMAIL=.*@${old_base}\$" "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+    sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=admin@${new_base}|" "${COMMUNITYOS_ROOT}/.env"
+  fi
+  # Matrix server name follows DOMAIN_CHAT for new installs; update env for Caddy/Element
+  if grep -q '^SYNAPSE_SERVER_NAME=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+    sed -i "s|^SYNAPSE_SERVER_NAME=.*|SYNAPSE_SERVER_NAME=${DOMAIN_CHAT}|" "${COMMUNITYOS_ROOT}/.env"
+  else
+    echo "SYNAPSE_SERVER_NAME=${DOMAIN_CHAT}" >> "${COMMUNITYOS_ROOT}/.env"
+  fi
+
+  # Element client config
+  local brand=""
+  brand="$(grep -E '^COMMUNITY_NAME=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  brand="$(printf '%s' "${brand}" | tr -d "'\"" )"
+  brand="${brand:-CommunityOS}"
+  cat > "${COMMUNITYOS_ROOT}/config.json" <<EOF
+{
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://${DOMAIN_CHAT}",
+      "server_name": "${DOMAIN_CHAT}"
+    }
+  },
+  "brand": "${brand}",
+  "default_theme": "light",
+  "disable_custom_urls": true,
+  "disable_guests": true
+}
+EOF
+
+  # DNS — always source apps.sh so app_update_dns exists and is set -u safe
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/apps.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/apps.sh"
+  if declare -F app_update_dns >/dev/null 2>&1; then
+    app_update_dns
+  elif declare -F domain_dnsmasq_addresses >/dev/null 2>&1; then
+    local ip=""
+    ip="$(grep -E '^SERVER_IP=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    ip="$(printf '%s' "${ip}" | tr -d "'\"" )"
+    if [[ -n "${ip}" ]]; then
+      mkdir -p "${COMMUNITYOS_ROOT}/runtime"
+      {
+        echo "# CommunityOS LAN DNS — SERVER_IP=${ip} DOMAIN_BASE=${DOMAIN_BASE}"
+        echo "domain-needed"
+        echo "bogus-priv"
+        echo "no-resolv"
+        echo "server=1.1.1.1"
+        echo "server=8.8.8.8"
+        domain_dnsmasq_addresses "${ip}"
+      } > "${COMMUNITYOS_ROOT}/runtime/dnsmasq.conf"
+    fi
+  fi
+
+  load_env 2>/dev/null || true
+  log_info "Reloading gateway (Caddy) and DNS..."
+  if declare -F compose >/dev/null 2>&1; then
+    compose up -d caddy 2>/dev/null || true
+    if docker inspect communityos-dns >/dev/null 2>&1; then
+      compose up -d dns 2>/dev/null || true
+      docker restart communityos-dns 2>/dev/null || true
+    fi
+  fi
+  docker restart communityos-caddy 2>/dev/null || true
+  # Element picks up config.json when Chat is present
+  if docker inspect communityos-element-web >/dev/null 2>&1; then
+    docker restart communityos-element-web 2>/dev/null || true
+  fi
+
+  # Optional apps that publish absolute URLs (only if installed/enabled)
+  if [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/nextcloud.enabled" ]]; then
+    log_info "Recreating Files (Nextcloud) with new host..."
+    compose up -d --no-deps --force-recreate nextcloud 2>/dev/null || true
+  fi
+  if [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/jellyfin.enabled" ]]; then
+    log_info "Recreating Media (Jellyfin) with new host..."
+    compose up -d --no-deps --force-recreate jellyfin 2>/dev/null || true
+  fi
+  if [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/peertube.enabled" ]]; then
+    log_info "Recreating Streaming (PeerTube) with new host..."
+    compose up -d --no-deps --force-recreate peertube 2>/dev/null || true
+  fi
+
+  log_ok "DOMAIN_BASE is now ${DOMAIN_BASE}"
+  echo
+  echo "  Website:   https://${DOMAIN_BASE}"
+  echo "  Chat:      https://${DOMAIN_CHAT}"
+  echo "  Assistant: https://${DOMAIN_AI}"
+  echo
+  echo "If clients still use the old name, update DNS or /etc/hosts."
+  echo "Previous config saved under ${backup_dir}"
+  echo
+  if [[ "${old_base}" != *.home.arpa ]] || [[ "${new_base}" != *.home.arpa ]]; then
+    echo "Matrix note: Synapse data may still identify as the previous server name."
+    echo "New clients will use ${DOMAIN_CHAT}. Existing encrypted rooms may need care."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Core services (website / chat / ai) — modular enable flags
+# ---------------------------------------------------------------------------
+
+service_flag_path() {
+  echo "${COMMUNITYOS_ROOT}/runtime/services/${1}.enabled"
+}
+
+service_is_enabled() {
+  local id="$1"
+  # Default: enabled if flag missing (backward compatible full installs)
+  local f
+  f="$(service_flag_path "${id}")"
+  if [[ ! -d "${COMMUNITYOS_ROOT}/runtime/services" ]]; then
+    return 0
+  fi
+  # If the directory exists but was never seeded, treat missing as enabled only when no flags at all
+  if [[ ! -f "${f}" ]]; then
+    # If any service flag exists, missing means disabled; if none exist, all enabled
+    if compgen -G "${COMMUNITYOS_ROOT}/runtime/services/*.enabled" >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+  return 0
+}
+
+service_enable() {
+  mkdir -p "${COMMUNITYOS_ROOT}/runtime/services"
+  touch "$(service_flag_path "$1")"
+}
+
+service_disable_flag() {
+  rm -f "$(service_flag_path "$1")"
+}
+
+cmd_service() {
+  local sub="${1:-status}"
+  shift || true
+  case "${sub}" in
+    status|list|"") cmd_service_status ;;
+    enable)  need_root "service enable"; cmd_service_enable "$@" ;;
+    disable) need_root "service disable"; cmd_service_disable "$@" ;;
+    *)
+      echo "Usage:"
+      echo "  communityos service status"
+      echo "  sudo communityos service enable  <website|chat|ai>"
+      echo "  sudo communityos service disable <website|chat|ai>"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_service_status() {
+  ensure_installed
+  echo
+  echo "Core services"
+  echo "-------------"
+  local id name
+  for id in website chat ai; do
+    case "${id}" in
+      website) name="Website (WordPress)" ;;
+      chat)    name="Chat (Matrix)" ;;
+      ai)      name="Assistant (Open WebUI + Ollama)" ;;
+    esac
+    if service_is_enabled "${id}"; then
+      echo "  ✓ ${name}"
+    else
+      echo "  ○ ${name} (disabled)"
+    fi
+  done
+  echo
+  echo "Optional apps: communityos app list"
+  echo "Infrastructure (Caddy, DNS, shared DBs) stays available as needed."
+  echo
+}
+
+cmd_service_enable() {
+  ensure_installed
+  local id="${1:-}"
+  case "${id}" in
+    website|chat|ai) ;;
+    *) echo "Usage: sudo communityos service enable <website|chat|ai>"; exit 1 ;;
+  esac
+  # Seed all-enabled state if first time using flags so we don't disable others implicitly
+  if [[ ! -d "${COMMUNITYOS_ROOT}/runtime/services" ]] || ! compgen -G "${COMMUNITYOS_ROOT}/runtime/services/*.enabled" >/dev/null 2>&1; then
+    mkdir -p "${COMMUNITYOS_ROOT}/runtime/services"
+    touch "${COMMUNITYOS_ROOT}/runtime/services/website.enabled"
+    touch "${COMMUNITYOS_ROOT}/runtime/services/chat.enabled"
+    touch "${COMMUNITYOS_ROOT}/runtime/services/ai.enabled"
+  fi
+  service_enable "${id}"
+  # Persist SERVICE_* in .env for install-engine / start
+  case "${id}" in
+    website) grep -q '^SERVICE_WEBSITE=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null && sed -i 's/^SERVICE_WEBSITE=.*/SERVICE_WEBSITE=true/' "${COMMUNITYOS_ROOT}/.env" || echo 'SERVICE_WEBSITE=true' >> "${COMMUNITYOS_ROOT}/.env" ;;
+    chat)    grep -q '^SERVICE_CHAT=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null && sed -i 's/^SERVICE_CHAT=.*/SERVICE_CHAT=true/' "${COMMUNITYOS_ROOT}/.env" || echo 'SERVICE_CHAT=true' >> "${COMMUNITYOS_ROOT}/.env" ;;
+    ai)      grep -q '^SERVICE_AI=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null && sed -i 's/^SERVICE_AI=.*/SERVICE_AI=true/' "${COMMUNITYOS_ROOT}/.env" || echo 'SERVICE_AI=true' >> "${COMMUNITYOS_ROOT}/.env" ;;
+  esac
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/apps.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/apps.sh"
+  if declare -F service_sync_compose_profiles >/dev/null 2>&1; then
+    service_sync_compose_profiles
+  fi
+  log_info "Deploying ${id} stack (Compose profile)..."
+  case "${id}" in
+    website) compose --profile website up -d ;;
+    chat)    compose --profile chat up -d ;;
+    ai)      compose --profile ai up -d ;;
+  esac
+  compose up -d caddy 2>/dev/null || true
+  if declare -F app_update_dns >/dev/null 2>&1; then
+    app_update_dns
+  fi
+  log_ok "Service enabled: ${id}"
+  cmd_service_status
+}
+
+cmd_service_disable() {
+  ensure_installed
+  local id="${1:-}"
+  case "${id}" in
+    website|chat|ai) ;;
+    *) echo "Usage: sudo communityos service disable <website|chat|ai>"; exit 1 ;;
+  esac
+  # Seed flags if needed so disable is meaningful
+  if [[ ! -d "${COMMUNITYOS_ROOT}/runtime/services" ]] || ! compgen -G "${COMMUNITYOS_ROOT}/runtime/services/*.enabled" >/dev/null 2>&1; then
+    mkdir -p "${COMMUNITYOS_ROOT}/runtime/services"
+    touch "${COMMUNITYOS_ROOT}/runtime/services/website.enabled"
+    touch "${COMMUNITYOS_ROOT}/runtime/services/chat.enabled"
+    touch "${COMMUNITYOS_ROOT}/runtime/services/ai.enabled"
+  fi
+  service_disable_flag "${id}"
+  case "${id}" in
+    website)
+      if grep -q '^SERVICE_WEBSITE=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+        sed -i 's/^SERVICE_WEBSITE=.*/SERVICE_WEBSITE=false/' "${COMMUNITYOS_ROOT}/.env"
+      else
+        echo 'SERVICE_WEBSITE=false' >> "${COMMUNITYOS_ROOT}/.env"
+      fi
+      compose stop wordpress wp-cli 2>/dev/null || true
+      # Keep mariadb if Nextcloud may need it
+      if [[ ! -f "${COMMUNITYOS_ROOT}/runtime/apps/nextcloud.enabled" ]]; then
+        compose stop mariadb 2>/dev/null || true
+      fi
+      ;;
+    chat)
+      if grep -q '^SERVICE_CHAT=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+        sed -i 's/^SERVICE_CHAT=.*/SERVICE_CHAT=false/' "${COMMUNITYOS_ROOT}/.env"
+      else
+        echo 'SERVICE_CHAT=false' >> "${COMMUNITYOS_ROOT}/.env"
+      fi
+      compose stop element-web synapse 2>/dev/null || true
+      if [[ ! -f "${COMMUNITYOS_ROOT}/runtime/apps/peertube.enabled" ]]; then
+        compose stop postgres 2>/dev/null || true
+      fi
+      ;;
+    ai)
+      if grep -q '^SERVICE_AI=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+        sed -i 's/^SERVICE_AI=.*/SERVICE_AI=false/' "${COMMUNITYOS_ROOT}/.env"
+      else
+        echo 'SERVICE_AI=false' >> "${COMMUNITYOS_ROOT}/.env"
+      fi
+      compose stop open-webui open-webui-init 2>/dev/null || true
+      # Keep shared ollama if Hermes still needs it
+      if [[ ! -f "${COMMUNITYOS_ROOT}/runtime/apps/hermes.enabled" ]]; then
+        compose stop ollama 2>/dev/null || true
+      fi
+      ;;
+  esac
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/apps.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/apps.sh"
+  if declare -F service_sync_compose_profiles >/dev/null 2>&1; then
+    service_sync_compose_profiles
+  fi
+  if declare -F app_update_dns >/dev/null 2>&1; then
+    app_update_dns
+  fi
+  log_ok "Service disabled: ${id} (data retained)"
+  cmd_service_status
+}
+
+
+
+cmd_tls() {
+  ensure_installed
+  # shellcheck source=/dev/null
+  [[ -f "${COMMUNITYOS_ROOT}/lib/tls.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/tls.sh"
+  [[ -f "${COMMUNITYOS_ROOT}/lib/domain.sh" ]] && source "${COMMUNITYOS_ROOT}/lib/domain.sh"
+  load_env 2>/dev/null || true
+  if declare -F domain_load >/dev/null 2>&1; then domain_load; fi
+  local sub="${1:-status}"
+  shift || true
+  case "${sub}" in
+    status|"")
+      if declare -F tls_status >/dev/null 2>&1; then
+        tls_status
+      else
+        echo "TLS helpers not available (lib/tls.sh missing)"
+        exit 1
+      fi
+      ;;
+    set)
+      need_root "tls set"
+      local mode="${1:-}"
+      if [[ -z "${mode}" ]]; then
+        echo "Usage: sudo communityos tls set <local|acme_dns01>"
+        exit 1
+      fi
+      tls_mode_set "${mode}" || exit 1
+      mkdir -p "${COMMUNITYOS_ROOT}/secrets"
+      if [[ "${mode}" == "acme_dns01" || "${mode}" == "acme" || "${mode}" == "public" || "${mode}" == "letsencrypt" ]]; then
+        if declare -F tls_print_cloudflare_guide >/dev/null 2>&1; then
+          tls_print_cloudflare_guide
+        fi
+        if [[ ! -s "${COMMUNITYOS_ROOT}/secrets/acme.env" ]] \
+           || ! grep -qE '^CLOUDFLARE_API_TOKEN=.+' "${COMMUNITYOS_ROOT}/secrets/acme.env" 2>/dev/null; then
+          log_warn "Missing Cloudflare API token in ${COMMUNITYOS_ROOT}/secrets/acme.env"
+          log_warn "Site stays reachable on existing certs until secrets are complete."
+        fi
+        if [[ "${DOMAIN_BASE:-}" == *.home.arpa ]]; then
+          log_warn "DOMAIN_BASE=${DOMAIN_BASE} is not publicly registrable — use TLS_MODE=local"
+        fi
+        if declare -F tls_secrets_ok >/dev/null 2>&1 && ! tls_secrets_ok; then
+          log_warn "ACME secrets incomplete — required keys: ACME_EMAIL, ACME_DNS_PROVIDER=cloudflare, CLOUDFLARE_API_TOKEN"
+        fi
+      fi
+      if declare -F tls_prepare_caddy_runtime >/dev/null 2>&1; then
+        tls_prepare_caddy_runtime
+      elif declare -F tls_apply_caddyfile >/dev/null 2>&1; then
+        tls_apply_caddyfile
+      fi
+      if ! compose up -d --force-recreate caddy 2>/dev/null; then
+        compose up -d caddy 2>/dev/null || log_warn "Caddy recreate failed — previous container may still serve old certs"
+      fi
+      # Brief settle after recreate before probing certs
+      sleep 3
+      if declare -F tls_prewarm >/dev/null 2>&1; then
+        log_info "Pre-warming certificates for enabled hosts…"
+        if ! tls_prewarm; then
+          log_warn "Public certificate not fully active yet — check secrets and: docker logs communityos-caddy --tail 80"
+        fi
+      fi
+      tls_status
+      ;;
+    prewarm)
+      need_root "tls prewarm"
+      if declare -F tls_prewarm >/dev/null 2>&1; then
+        if tls_prewarm; then
+          log_ok "Certificate pre-warm succeeded for enabled hosts"
+        else
+          log_warn "Certificate pre-warm still pending for some hosts (issuance may need another minute)"
+          echo "  Re-run:  sudo communityos tls prewarm"
+          echo "  Logs:    docker logs communityos-caddy --tail 100"
+          echo "  Secrets: ${COMMUNITYOS_ROOT}/secrets/acme.env"
+          exit 1
+        fi
+      fi
+      ;;
+    *)
+      echo "Usage:"
+      echo "  communityos tls status"
+      echo "  sudo communityos tls set <local|acme_dns01>"
+      echo "  sudo communityos tls prewarm"
+      exit 1
+      ;;
+  esac
+}
+
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "${cmd}" in
+    install)  cmd_install "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    apps)     cmd_apps "$@" ;;
+    app)      cmd_app "$@" ;;
+    matrix)   cmd_matrix "$@" ;;
+    domain)   cmd_domain "$@" ;;
+    tls)      cmd_tls "$@" ;;
+    service)  cmd_service "$@" ;;
+    maps)     cmd_maps "$@" ;;
+    update)   cmd_update "$@" ;;
+    start)    cmd_start "$@" ;;
+    stop)     cmd_stop "$@" ;;
+    restart)  cmd_restart "$@" ;;
+    status)   cmd_status "$@" ;;
+    backup)   cmd_backup "$@" ;;
+    restore)  cmd_restore "$@" ;;
+    doctor)   cmd_doctor "$@" ;;
+    health)   cmd_doctor "$@" ;;
+    logs)     cmd_logs "$@" ;;
+    info)     cmd_info "$@" ;;
+    version)  cmd_version "$@" ;;
+    help|-h|--help) usage ;;
+    *)
+      echo "Unknown command: ${cmd}"
+      echo
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

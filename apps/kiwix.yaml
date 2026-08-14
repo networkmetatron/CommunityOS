@@ -1,0 +1,21 @@
+# CommunityOS optional app: Kiwix (offline library)
+services:
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:3.7.0
+    container_name: communityos-kiwix
+    restart: unless-stopped
+    working_dir: /data
+    # Shell so *.zim expands; idle cleanly when no ZIM packages are present yet.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -- /data/*.zim
+        if [ ! -e "$1" ]; then
+          echo "CommunityOS Library: no .zim files in /data yet."
+          echo "Add offline packages under data/kiwix/, then: sudo communityos app restart kiwix"
+          # Stay up without crash-loop so status/doctor stay quiet
+          exec sleep infinity
+        fi
+        exec kiwix-serve --port=8080 "$@"
+    volumes:
+      - ./data/kiwix:/data:ro

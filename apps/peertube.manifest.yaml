@@ -1,0 +1,15 @@
+id: peertube
+name: Streaming
+description: Community video hosting and live streaming (resource-intensive — extra CPU/RAM/disk recommended)
+url: https://stream.community.home.arpa
+domain: stream.community.home.arpa
+compose: apps/peertube.yaml
+container: communityos-peertube
+data: /opt/communityos/data/peertube
+requires:
+  - caddy
+  - postgres
+# Offline redistribution of upstream Docker images (package-offline.sh).
+# false/absent = admin must supply images for air-gapped optional-app install.
+# true = only when redistribution is verified/approved for CommunityOS bundles.
+redistribute_offline: false

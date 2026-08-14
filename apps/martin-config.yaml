@@ -1,0 +1,9 @@
+# Martin configuration — scan /data for MBTiles / PMTiles
+keep_alive: 75
+listen_addresses: "0.0.0.0:3000"
+mbtiles:
+  paths:
+    - /data
+pmtiles:
+  paths:
+    - /data

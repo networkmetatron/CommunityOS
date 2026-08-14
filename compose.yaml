@@ -1,0 +1,327 @@
+# CommunityOS 1.0.2 — pinned image versions for reproducible installs
+name: communityos
+
+services:
+  caddy:
+    # CADDY_IMAGE: caddy:2.9.1-alpine (local CA) or DNS-plugin image for ACME DNS-01
+    image: ${CADDY_IMAGE:-caddy:2.9.1-alpine}
+    container_name: communityos-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file:
+      - ./secrets/acme.env
+    environment:
+      DOMAIN_BASE: ${DOMAIN_BASE}
+      DOMAIN_CHAT: ${DOMAIN_CHAT}
+      DOMAIN_AI: ${DOMAIN_AI}
+      DOMAIN_LIBRARY: ${DOMAIN_LIBRARY:-library.${DOMAIN_BASE}}
+      DOMAIN_MAPS: ${DOMAIN_MAPS:-maps.${DOMAIN_BASE}}
+      DOMAIN_MEDIA: ${DOMAIN_MEDIA:-media.${DOMAIN_BASE}}
+      DOMAIN_FILES: ${DOMAIN_FILES:-files.${DOMAIN_BASE}}
+      DOMAIN_STREAM: ${DOMAIN_STREAM:-stream.${DOMAIN_BASE}}
+      DOMAIN_HERMES: ${DOMAIN_HERMES:-hermes.${DOMAIN_BASE}}
+      # Cloudflare DNS-01 (also accepted as CF_API_TOKEN in secrets/acme.env)
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./static/welcome:/srv/welcome:ro
+      - ./static/maps:/srv/maps:ro
+      - ./static/apps-missing:/srv/apps-missing:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    # No depends_on for profiled app stacks — Caddy starts with infrastructure;
+    # backends may be absent until their profile is enabled.
+
+  # LAN DNS for CommunityOS hostnames (DOMAIN_BASE and derived names)
+  # Core app stacks use Compose profiles: website | chat | ai
+  # Infrastructure (caddy, dns) has no profile and always starts with `compose up`.
+  dns:
+    image: andyshinn/dnsmasq:2.76
+    container_name: communityos-dns
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+    volumes:
+      - ./runtime/dnsmasq.conf:/etc/dnsmasq.conf:ro
+    cap_add:
+      - NET_ADMIN
+
+  mariadb:
+    profiles: ["website"]
+    image: mariadb:11.4
+    container_name: communityos-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${WORDPRESS_DB_NAME}
+      MYSQL_USER: ${WORDPRESS_DB_USER}
+      MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mariadb_data:/var/lib/mysql
+
+  # Shared by Chat (Matrix) and optional Streaming (PeerTube).
+  # Profile "chat" covers Matrix; profile "peertube" is activated when
+  # the PeerTube optional app is enabled so Website-only + Streaming works
+  # without pulling in the full chat stack (synapse/element-web).
+  postgres:
+    profiles: ["chat", "peertube"]
+    image: postgres:16.6-alpine
+    container_name: communityos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  wordpress:
+    profiles: ["website"]
+    image: wordpress:6.7.2-php8.2-apache
+    container_name: communityos-wordpress
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+    volumes:
+      - wordpress_data:/var/www/html
+
+  wp-cli:
+    profiles: ["website"]
+    image: wordpress:cli-2.12.0-php8.2
+    container_name: communityos-wpcli
+    restart: "no"
+    depends_on:
+      wordpress:
+        condition: service_started
+      mariadb:
+        condition: service_healthy
+    user: "33:33"
+    environment:
+      WORDPRESS_DB_HOST: mariadb:3306
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      DOMAIN_BASE: ${DOMAIN_BASE}
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS: ${ADMIN_PASS}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+    volumes:
+      - wordpress_data:/var/www/html
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        cd /var/www/html
+        i=0
+        while [ ! -f wp-settings.php ] && [ ! -f index.php ]; do
+          i=$$((i+1)); [ $$i -gt 60 ] && exit 1; sleep 2
+        done
+        i=0
+        until wp db check --allow-root 2>/dev/null; do
+          i=$$((i+1)); [ $$i -gt 60 ] && exit 1; sleep 2
+        done
+        if ! wp core is-installed --allow-root 2>/dev/null; then
+          wp core install \
+            --url="https://$$DOMAIN_BASE" \
+            --title="CommunityOS" \
+            --admin_user="$$ADMIN_USER" \
+            --admin_password="$$ADMIN_PASS" \
+            --admin_email="$$ADMIN_EMAIL" \
+            --skip-email --allow-root
+        else
+          wp user update "$$ADMIN_USER" --user_pass="$$ADMIN_PASS" --allow-root 2>/dev/null || true
+        fi
+
+  synapse:
+    profiles: ["chat"]
+    image: matrixdotorg/synapse:v1.157.2
+    container_name: communityos-synapse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SYNAPSE_SERVER_NAME: ${DOMAIN_CHAT}
+      SYNAPSE_REPORT_STATS: "no"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      SYNAPSE_REGISTRATION_SHARED_SECRET: ${SYNAPSE_REGISTRATION_SHARED_SECRET}
+      MATRIX_FEDERATION_ENABLED: ${MATRIX_FEDERATION_ENABLED:-false}
+      MATRIX_FEDERATION_MODE: ${MATRIX_FEDERATION_MODE:-off}
+      DOMAIN_CHAT: ${DOMAIN_CHAT}
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS: ${ADMIN_PASS}
+    volumes:
+      - synapse_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8008/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ ! -f /data/homeserver.yaml ]; then
+          /start.py generate
+        fi
+        python3 -c "
+        import os, yaml
+        path = '/data/homeserver.yaml'
+        with open(path) as f:
+            config = yaml.safe_load(f)
+        domain = os.environ.get('DOMAIN_CHAT') or os.environ['SYNAPSE_SERVER_NAME']
+        config['public_baseurl'] = 'https://' + domain + '/'
+        config['registration_shared_secret'] = os.environ['SYNAPSE_REGISTRATION_SHARED_SECRET']
+        # Invitation-only: public registration needs a token from `communityos matrix invite`
+        config['enable_registration'] = True
+        config['registration_requires_token'] = True
+        # Token is the verification step (no email/captcha on a local community server)
+        config['enable_registration_without_verification'] = True
+        # Federation: MATRIX_FEDERATION_MODE=off|private|public (ENABLED kept for compat)
+        _mode = os.environ.get('MATRIX_FEDERATION_MODE', '').lower().strip()
+        if _mode in ('private', 'public'):
+            fed = True
+        elif _mode == 'off':
+            fed = False
+        else:
+            fed = os.environ.get('MATRIX_FEDERATION_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+        config['allow_public_rooms_over_federation'] = bool(fed)
+        config['database'] = {
+            'name': 'psycopg2',
+            'allow_unsafe_locale': True,
+            'args': {
+                'user': os.environ['POSTGRES_USER'],
+                'password': os.environ['POSTGRES_PASSWORD'],
+                'dbname': os.environ['POSTGRES_DB'],
+                'host': 'postgres',
+                'port': 5432,
+                'cp_min': 5,
+                'cp_max': 10,
+            },
+        }
+        config['listeners'] = [{
+            'port': 8008,
+            'type': 'http',
+            'bind_addresses': ['0.0.0.0'],
+            'resources': [{'names': (['client', 'federation'] if fed else ['client']), 'compress': False}],
+        }]
+        with open(path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False)
+        "
+        /start.py run &
+        SYNAPSE_PID=$$!
+        i=0
+        until curl -fsS http://127.0.0.1:8008/_matrix/client/versions >/dev/null 2>&1; do
+          i=$$((i+1)); [ $$i -gt 90 ] && exit 1; sleep 2
+        done
+        register_new_matrix_user -c /data/homeserver.yaml \
+          -u "$$ADMIN_USER" -p "$$ADMIN_PASS" -a --exists-ok \
+          http://127.0.0.1:8008 2>/dev/null || \
+        register_new_matrix_user -c /data/homeserver.yaml \
+          -u "$$ADMIN_USER" -p "$$ADMIN_PASS" -a \
+          http://127.0.0.1:8008 2>/dev/null || true
+        wait $$SYNAPSE_PID
+
+  element-web:
+    profiles: ["chat"]
+    image: vectorim/element-web:v1.12.24
+    container_name: communityos-element
+    restart: unless-stopped
+    depends_on:
+      - synapse
+    volumes:
+      - ./config.json:/app/config.json:ro
+
+  ollama:
+    profiles: ["ai", "hermes"]
+    image: ollama/ollama:0.6.5
+    container_name: communityos-ollama
+    restart: unless-stopped
+    # CPU-only is supported; GPU is optional and not required to install
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  open-webui:
+    profiles: ["ai"]
+    image: ghcr.io/open-webui/open-webui:v0.6.26
+    container_name: communityos-open-webui
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    environment:
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: "true"
+      OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      - open_webui_data:/app/backend/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null || curl -fsS http://127.0.0.1:8080/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
+  open-webui-init:
+    profiles: ["ai"]
+    image: curlimages/curl:8.11.1
+    container_name: communityos-open-webui-init
+    restart: "no"
+    depends_on:
+      open-webui:
+        condition: service_healthy
+    environment:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS: ${ADMIN_PASS}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        sleep 3
+        curl -sS -o /tmp/out -w "%{http_code}" -X POST http://open-webui:8080/api/v1/auths/signup \
+          -H "Content-Type: application/json" \
+          -d "{\"name\":\"$$ADMIN_USER\",\"email\":\"$$ADMIN_EMAIL\",\"password\":\"$$ADMIN_PASS\"}" || true
+        exit 0
+
+volumes:
+  caddy_data:
+  caddy_config:
+  mariadb_data:
+  wordpress_data:
+  postgres_data:
+  synapse_data:
+  open_webui_data:
+  ollama_data:

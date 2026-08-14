@@ -1,0 +1,15 @@
+id: hermes
+name: Agent
+description: Hermes Agent — autonomous local agent with tools + native admin dashboard (opt-in)
+url: https://hermes.community.home.arpa
+domain: hermes.community.home.arpa
+compose: apps/hermes.yaml
+container: communityos-hermes
+data: /opt/communityos/data/hermes
+requires:
+  - ollama
+  - caddy
+# Offline redistribution of upstream Docker images (package-offline.sh).
+# false/absent = admin must supply images for air-gapped optional-app install.
+# true = only when redistribution is verified/approved for CommunityOS bundles.
+redistribute_offline: false

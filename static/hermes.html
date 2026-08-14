@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hermes Agent — not installed</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }
+    code { background: #f0f0f0; padding: 0.1em 0.35em; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Hermes Agent is not installed</h1>
+  <p>This hostname is reserved for the optional Hermes admin dashboard.</p>
+  <p>Install (administrator only):</p>
+  <p><code>sudo communityos app install hermes</code></p>
+  <p>Then open this page again and sign in with the Hermes dashboard credentials.</p>
+  <p>Ordinary AI chat remains at <a href="#" id="cos-ai">Assistant (Open WebUI)</a>.</p>
+
+<script>
+(function () {
+  function baseHost(host) {
+    host = (host || "").toLowerCase();
+    if (!host || host === "localhost" || /^[0-9.]+$/.test(host)) {
+      return "community.home.arpa";
+    }
+    // service.community.example.com → community.example.com
+    // community.example.com stays as-is when first label is not a known service prefix
+    var prefixes = ["chat","ai","library","maps","media","files","stream","hermes"];
+    var parts = host.split(".");
+    if (parts.length >= 3 && prefixes.indexOf(parts[0]) >= 0) {
+      return parts.slice(1).join(".");
+    }
+    return host;
+  }
+  var base = baseHost(window.location.hostname);
+  var ai = "ai." + base;
+  var el;
+  el = document.getElementById("cos-back");
+  if (el) { el.href = "https://" + base + "/"; }
+  el = document.getElementById("cos-home");
+  if (el) { el.href = "https://" + base + "/"; }
+  el = document.getElementById("cos-ai");
+  if (el) { el.href = "https://" + ai + "/"; el.textContent = "https://" + ai; }
+})();
+</script>
+
+</body>
+</html>
