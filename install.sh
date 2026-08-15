@@ -75,10 +75,10 @@ if [[ "${#need[@]}" -gt 0 ]]; then
 fi
 
 # Copy package into /opt/communityos without requiring rsync
-mkdir -p /opt/communityos/{lib,bin,scripts,static/welcome,runtime,backups,apps,data,config,docs}
+mkdir -p /opt/communityos/{lib,bin,scripts,static/welcome,runtime,backups,apps,data,config,docs,secrets}
 if [[ "${ROOT}" != "/opt/communityos" ]]; then
   for item in compose.yaml Caddyfile config.json VERSION PRINCIPLES.md README.md CHANGELOG.md \
-              bin lib scripts static apps data config docs; do
+              bin lib scripts static apps data config docs secrets; do
     if [[ -e "${ROOT}/${item}" ]]; then
       cp -a "${ROOT}/${item}" /opt/communityos/
     fi
