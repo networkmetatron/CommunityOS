@@ -10,7 +10,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 # Deploy package files into /opt/communityos
-mkdir -p "${TARGET}"/{lib,bin,scripts,static/welcome,runtime,backups}
+mkdir -p "${TARGET}"/{lib,bin,scripts,static/welcome,runtime,backups,secrets}
 # Placeholder DNS config file so Docker never creates this path as a directory
 if [[ -d "${TARGET}/runtime/dnsmasq.conf" ]]; then
   rm -rf "${TARGET}/runtime/dnsmasq.conf"
@@ -26,7 +26,7 @@ DNSPLACEHOLDER
 fi
 if [[ "${PKG_DIR}" != "${TARGET}" ]]; then
   for item in compose.yaml Caddyfile config.json VERSION PRINCIPLES.md README.md CHANGELOG.md \
-              bin lib scripts static apps data; do
+              bin lib scripts static apps data secrets; do
     if [[ -e "${PKG_DIR}/${item}" ]]; then
       cp -a "${PKG_DIR}/${item}" "${TARGET}/"
     fi
@@ -36,6 +36,16 @@ install -m 755 "${TARGET}/bin/communityos" /usr/local/bin/communityos
 
 BASE_DIR="${TARGET}"
 cd "${BASE_DIR}"
+
+# TLS runtime helpers
+# shellcheck source=/dev/null
+if [[ -f "${BASE_DIR}/lib/tls.sh" ]]; then
+  source "${BASE_DIR}/lib/tls.sh"
+else
+  echo "[FAIL] lib/tls.sh is missing from the CommunityOS installation."
+  exit 1
+fi
+
 
 # ---------------------------------------------------------------------------
 # Offline mode (air-gapped install from a local bundle)
@@ -782,6 +792,22 @@ if [[ ! -f "${_dns_conf}" ]]; then
   echo "[FAIL] Failed to write ${_dns_conf} as a regular file"
   ls -la "${BASE_DIR}/runtime" || true
   exit 1
+fi
+
+# Prepare the runtime Caddyfile BEFORE the first Compose startup.
+# Public ACME mode must never start with the local-CA template.
+if ! tls_prepare_caddy_runtime; then
+  echo "[FAIL] Could not prepare the Caddy TLS configuration."
+  exit 1
+fi
+
+if [[ "$(tls_mode_get)" == "acme_dns01" ]]; then
+  if grep -qE '^[[:space:]]*local_certs[[:space:]]*$|^[[:space:]]*tls internal([[:space:]]|$)'       "${BASE_DIR}/Caddyfile" 2>/dev/null; then
+    echo "[FAIL] Public ACME mode selected, but generated Caddyfile still contains local TLS directives."
+    echo "       Refusing to start Caddy with the wrong certificate mode."
+    exit 1
+  fi
+  echo "[ OK ] Caddyfile configured for Let's Encrypt ACME DNS-01"
 fi
 
 echo "Starting CommunityOS (this may take several minutes)..."
