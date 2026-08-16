@@ -22,6 +22,7 @@ services:
       DOMAIN_FILES: ${DOMAIN_FILES:-files.${DOMAIN_BASE}}
       DOMAIN_STREAM: ${DOMAIN_STREAM:-stream.${DOMAIN_BASE}}
       DOMAIN_HERMES: ${DOMAIN_HERMES:-hermes.${DOMAIN_BASE}}
+      DOMAIN_SEARCH: ${DOMAIN_SEARCH:-search.${DOMAIN_BASE}}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./static/welcome:/srv/welcome:ro

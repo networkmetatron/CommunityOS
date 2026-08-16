@@ -62,6 +62,10 @@ app_meta() {
           [[ "${field}" == domain ]] && { echo "$(domain_for hermes)"; return; }
           echo "https://$(domain_for hermes)"; return
           ;;
+        search)
+          [[ "${field}" == domain ]] && { echo "$(domain_for search)"; return; }
+          echo "https://$(domain_for search)"; return
+          ;;
       esac
     fi
   fi
@@ -107,7 +111,7 @@ print(app.get('${field}','') or '')
     hermes:domain) echo "$(domain_for hermes)" ;;
     hermes:container) echo "communityos-hermes" ;;
     search:name) echo "Search" ;;
-    search:description) echo "Privacy-oriented community metasearch powered by SearXNG" ;;
+    search:description) echo "Privacy-oriented metasearch (SearXNG)" ;;
     search:url) echo "https://$(domain_for search)" ;;
     search:domain) echo "$(domain_for search)" ;;
     search:container) echo "communityos-searxng" ;;
@@ -125,7 +129,7 @@ app_aliases_resolve() {
     files) echo nextcloud ;;
     streaming|stream) echo peertube ;;
     agent|hermes-agent) echo hermes ;;
-    search|searx|searxng) echo search ;;
+    searx|searxng) echo search ;;
     *) echo "$1" ;;
   esac
 }
@@ -290,7 +294,7 @@ app_update_dns() {
     hosts+=("${DOMAIN_HERMES}")
   fi
   if [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/search.enabled" ]]; then
-    hosts+=("${DOMAIN_SEARCH}")
+    hosts+=("${DOMAIN_SEARCH:-search.${DOMAIN_BASE}}")
   fi
   # Always include base if nothing selected yet (infra-only edge case)
   if [[ "${#hosts[@]}" -eq 0 && -n "${DOMAIN_BASE}" ]]; then

@@ -139,6 +139,15 @@ http://{$DOMAIN_BASE} {
 }
 
 {$DOMAIN_SEARCH} {
-        encode gzip
-        reverse_proxy searxng:8080
+	encode gzip
+	tls internal
+	@missing {
+		expression `{http.reverse_proxy.upstream.status} == 502 || {http.reverse_proxy.upstream.status} == 503`
+	}
+	handle @missing {
+		rewrite * /search.html
+		root * /srv/apps-missing
+		file_server
+	}
+	reverse_proxy searxng:8080
 }

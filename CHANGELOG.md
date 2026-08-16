@@ -1,6 +1,26 @@
 ## Unreleased
 
+### CommunityOS 1.1.9
+- `tls_reload_caddy`: force-recreate/restart Caddy after TLS Caddyfile changes (no manual docker restart)
+- `communityos tls set` and ACME install path call reload before prewarm
+- `communityos apps`: live DOMAIN_BASE URLs (not registry community.home.arpa defaults)
+- Core services show enable commands when disabled; optional apps show install commands
+- `communityos app install chat|website|ai` redirects to `service enable`
+- SearXNG compose service named `searxng`; Caddy `reverse_proxy searxng:8080`
+- SearXNG image pin: `ghcr.io/searxng/searxng:2026.7.28-c01178d03` (validated)
+
+## Unreleased
+
+### CommunityOS 1.1.8
+- Fresh-install ACME: prompt for ACME email + Cloudflare token before Compose; write clean mode-600 secrets/acme.env
+- Optional app **Search** (SearXNG) at search.${DOMAIN_BASE}
+- ACME secrets empty-token continues only with explicit confirmation
+
+## Unreleased
+
 - TLS certificate modes (complete)
+  - Fresh-install ACME Caddyfile generated before first Caddy start (no local_certs/tls internal)
+  - Installer creates secrets/acme.env from example before Compose; prompts for Cloudflare token
   - ACME zone discovery uses public resolvers (1.1.1.1 / 8.8.8.8) to avoid Docker SERVFAIL
   - Staging ACME state cleared when enabling production Let's Encrypt
   - `tls prewarm` verifies Let's Encrypt issuer; fails if public cert not active

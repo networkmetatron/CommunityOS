@@ -6,22 +6,6 @@
 
 CommunityOS provides local-first Website, Chat, AI, and optional apps from one server.
 
-## License
-
-CommunityOS is free software: you can redistribute it and/or modify it
-under the terms of the GNU General Public License as published by the
-Free Software Foundation, either version 3 of the License, or (at your
-option) any later version.
-
-CommunityOS is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
-more details.
-
-See the `LICENSE` file for the complete license text.
-
-SPDX-License-Identifier: GPL-3.0-or-later
-
 ## Install
 
 1. Install Debian 13.

@@ -2375,23 +2375,93 @@ cmd_apps() {
   ensure_installed
   # shellcheck source=/dev/null
   source "${COMMUNITYOS_ROOT}/lib/apps.sh" 2>/dev/null || true
+  # shellcheck source=/dev/null
+  source "${COMMUNITYOS_ROOT}/lib/domain.sh" 2>/dev/null || true
+  load_env 2>/dev/null || true
+  if declare -F domain_load >/dev/null 2>&1; then
+    domain_load
+  elif declare -F domain_derive >/dev/null 2>&1; then
+    domain_derive
+  fi
+  local base chat ai
+  base="${DOMAIN_BASE:-community.home.arpa}"
+  chat="${DOMAIN_CHAT:-chat.${base}}"
+  ai="${DOMAIN_AI:-ai.${base}}"
+
+  _core_on() {
+    local id="$1"
+    if declare -F service_is_enabled >/dev/null 2>&1; then
+      service_is_enabled "${id}"
+      return $?
+    fi
+    if [[ -f "${COMMUNITYOS_ROOT}/runtime/services/${id}.enabled" ]]; then
+      return 0
+    fi
+    # No flags dir → legacy all-on
+    if [[ -d "${COMMUNITYOS_ROOT}/runtime/services" ]] \
+       && compgen -G "${COMMUNITYOS_ROOT}/runtime/services/*.enabled" >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  }
+
   echo
   echo "CommunityOS Apps"
   echo "================"
   echo
-  echo "Installed (core)"
-  echo "  ✓ Website      https://${DOMAIN_BASE:-community.home.arpa}"
-  echo "  ✓ Chat         https://${DOMAIN_CHAT:-chat.${DOMAIN_BASE:-community.home.arpa}}"
-  echo "  ✓ Assistant    https://${DOMAIN_AI:-ai.${DOMAIN_BASE:-community.home.arpa}}"
+  echo "Core Services"
+  echo "  Manage with:  sudo communityos service enable <website|chat|ai>"
   echo
-  echo "Optional"
+
+  if _core_on website; then
+    echo "  ✓ Website"
+    echo "      https://${base}"
+  else
+    echo "  ○ Website"
+    echo "      Enable:  sudo communityos service enable website"
+  fi
+  echo
+  if _core_on chat; then
+    echo "  ✓ Chat"
+    echo "      https://${chat}"
+  else
+    echo "  ○ Chat"
+    echo "      Enable:  sudo communityos service enable chat"
+  fi
+  echo
+  if _core_on ai; then
+    echo "  ✓ Assistant"
+    echo "      https://${ai}"
+  else
+    echo "  ○ Assistant"
+    echo "      Enable:  sudo communityos service enable ai"
+  fi
+  echo
+  echo "Optional Apps"
+  echo "  Manage with:  sudo communityos app install <app>"
+  echo
   local id name desc url ctn status
-  for id in $(app_list_ids 2>/dev/null || printf '%s\n' kiwix maps jellyfin); do
-    name="$(app_meta "${id}" name)"
-    desc="$(app_meta "${id}" description)"
-    url="$(app_meta "${id}" url)"
-    ctn="$(app_meta "${id}" container)"
-    if app_is_enabled "${id}"; then
+  for id in $(app_list_ids 2>/dev/null || printf '%s\n' kiwix maps jellyfin nextcloud peertube hermes search); do
+    name="$(app_meta "${id}" name 2>/dev/null || echo "${id}")"
+    desc="$(app_meta "${id}" description 2>/dev/null || true)"
+    # Always derive live URL from DOMAIN_BASE — never registry documentation defaults
+    if declare -F app_meta >/dev/null 2>&1; then
+      url="$(app_meta "${id}" url 2>/dev/null || true)"
+    fi
+    if [[ -z "${url}" || "${url}" == *community.home.arpa* ]]; then
+      case "${id}" in
+        kiwix) url="https://library.${base}" ;;
+        maps) url="https://maps.${base}" ;;
+        jellyfin) url="https://media.${base}" ;;
+        nextcloud) url="https://files.${base}" ;;
+        peertube) url="https://stream.${base}" ;;
+        hermes) url="https://hermes.${base}" ;;
+        search) url="https://search.${base}" ;;
+        *) url="https://${id}.${base}" ;;
+      esac
+    fi
+    ctn="$(app_meta "${id}" container 2>/dev/null || true)"
+    if app_is_enabled "${id}" 2>/dev/null; then
       status="installed"
       if [[ -n "${ctn}" ]] && docker inspect --format='{{.State.Status}}' "${ctn}" 2>/dev/null | grep -qi running; then
         status="running"
@@ -2402,7 +2472,7 @@ cmd_apps() {
       echo "      ${url}"
     else
       echo "  ○ ${name}"
-      echo "      ${desc}"
+      [[ -n "${desc}" ]] && echo "      ${desc}"
       echo "      Install:  sudo communityos app install ${id}"
     fi
     echo
@@ -2597,8 +2667,44 @@ cmd_app() {
       need_root "app install"
       local id raw="${1:-}"
       id="$(app_aliases_resolve "${raw}")"
+      # Core services are not optional apps — redirect operators clearly
+      case "${raw,,}" in
+        website|site|web)
+          echo "Website is a core CommunityOS service, not an optional app."
+          echo
+          echo "Use:"
+          echo "  sudo communityos service enable website"
+          exit 1
+          ;;
+        chat|matrix)
+          echo "Chat is a core CommunityOS service, not an optional app."
+          echo
+          echo "Use:"
+          echo "  sudo communityos service enable chat"
+          exit 1
+          ;;
+        ai|assistant|open-webui|openwebui)
+          echo "Assistant (AI) is a core CommunityOS service, not an optional app."
+          echo
+          echo "Use:"
+          echo "  sudo communityos service enable ai"
+          exit 1
+          ;;
+      esac
+      case "${id,,}" in
+        website|chat|ai)
+          echo "'${id}' is a core CommunityOS service, not an optional app."
+          echo
+          echo "Use:"
+          echo "  sudo communityos service enable ${id}"
+          exit 1
+          ;;
+      esac
       if [[ -z "${id}" ]] || [[ -z "$(app_meta "${id}" name)" ]]; then
         echo "Usage: communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
+        echo
+        echo "Core services (not apps):"
+        echo "  sudo communityos service enable <website|chat|ai>"
         exit 1
       fi
       repair_env_quotes
@@ -2624,23 +2730,6 @@ cmd_app() {
         load_env
         # Postgres role/database bootstrap runs later, after postgres is started
         # and healthy (see peertube case after app_enable).
-      fi
-
-      # SearXNG secret must exist before any Compose interpolation.
-      if [[ "${id}" == "search" ]]; then
-        load_env 2>/dev/null || true
-        if [[ -z "${SEARXNG_SECRET:-}" ]]; then
-          local _searx_secret
-          _searx_secret="$(openssl rand -hex 32)"
-          if grep -q '^SEARXNG_SECRET=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
-            sed -i "s|^SEARXNG_SECRET=.*$|SEARXNG_SECRET=${_searx_secret}|" "${COMMUNITYOS_ROOT}/.env"
-          else
-            echo "SEARXNG_SECRET=${_searx_secret}" >> "${COMMUNITYOS_ROOT}/.env"
-          fi
-          chgrp docker "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
-          chmod 640 "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
-          load_env
-        fi
       fi
 
       # Maps: deploy overlay + pmtiles BEFORE compose starts maps-api
@@ -3168,7 +3257,6 @@ HERMESENV
         nextcloud) docker restart communityos-nextcloud 2>/dev/null || compose up -d nextcloud ;;
         peertube) docker restart communityos-peertube communityos-peertube-redis 2>/dev/null || compose up -d peertube peertube-redis ;;
         hermes) docker restart communityos-hermes 2>/dev/null || compose up -d hermes ;;
-        search) docker restart communityos-searxng 2>/dev/null || compose up -d searxng ;;
         *) echo "Usage: communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"; exit 1 ;;
       esac
       log_ok "App restarted."
@@ -3180,8 +3268,9 @@ HERMESENV
       echo "Usage:"
       echo "  communityos apps"
       echo "  communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
-      echo "  communityos app remove  <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
-      echo "  communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
+      echo "  communityos service enable <website|chat|ai>   # core services"
+      echo "  communityos app remove  <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+      echo "  communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
       exit 1
       ;;
   esac
@@ -4533,11 +4622,17 @@ cmd_tls() {
       elif declare -F tls_apply_caddyfile >/dev/null 2>&1; then
         tls_apply_caddyfile
       fi
-      if ! compose up -d --force-recreate caddy 2>/dev/null; then
-        compose up -d caddy 2>/dev/null || log_warn "Caddy recreate failed — previous container may still serve old certs"
+      log_info "Reloading Caddy so the new TLS configuration is active…"
+      if declare -F tls_reload_caddy >/dev/null 2>&1; then
+        tls_reload_caddy || log_warn "Caddy reload had issues — try: sudo docker restart communityos-caddy"
+      else
+        compose up -d --no-deps --force-recreate caddy 2>/dev/null \
+          || compose up -d --force-recreate caddy 2>/dev/null \
+          || docker restart communityos-caddy 2>/dev/null \
+          || log_warn "Caddy recreate failed — previous container may still serve old certs"
       fi
-      # Brief settle after recreate before probing certs
-      sleep 3
+      # Settle after recreate before probing certs (ACME DNS-01 needs a moment)
+      sleep 5
       if declare -F tls_prewarm >/dev/null 2>&1; then
         log_info "Pre-warming certificates for enabled hosts…"
         if ! tls_prewarm; then

@@ -411,3 +411,50 @@ tls_status() {
     fi
   fi
 }
+
+
+# Force the running Caddy container to load the current Caddyfile + image.
+# File bind-mounts do not auto-reload; recreate (or restart) is required.
+tls_reload_caddy() {
+  local root="${COMMUNITYOS_ROOT:-/opt/communityos}"
+  local ok=0
+
+  # Prefer Compose force-recreate so image (local vs ACME plugin) also updates
+  if command -v docker >/dev/null 2>&1; then
+    if ( cd "${root}" && docker compose --env-file "${root}/.env" up -d --no-deps --force-recreate caddy ); then
+      ok=1
+    elif ( cd "${root}" && docker compose -f "${root}/compose.yaml" --env-file "${root}/.env" up -d --force-recreate caddy ); then
+      ok=1
+    fi
+  fi
+
+  if [[ "${ok}" -ne 1 ]]; then
+    # Fallback: hard restart of the named container (re-reads mounted Caddyfile)
+    if docker restart communityos-caddy >/dev/null 2>&1; then
+      ok=1
+    fi
+  fi
+
+  if [[ "${ok}" -ne 1 ]]; then
+    if declare -F log_warn >/dev/null 2>&1; then
+      log_warn "Could not reload Caddy — run: sudo docker restart communityos-caddy"
+    fi
+    return 1
+  fi
+
+  # Wait until the container accepts commands
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if docker exec communityos-caddy true >/dev/null 2>&1; then
+      if declare -F log_ok >/dev/null 2>&1; then
+        log_ok "Caddy reloaded (new Caddyfile / image active)"
+      fi
+      return 0
+    fi
+    sleep 1
+  done
+  if declare -F log_warn >/dev/null 2>&1; then
+    log_warn "Caddy container not ready after reload"
+  fi
+  return 1
+}

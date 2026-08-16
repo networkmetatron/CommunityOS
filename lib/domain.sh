@@ -61,7 +61,7 @@ domain_load() {
       val="${val%\"}"; val="${val#\"}"
       val="${val%\'}"; val="${val#\'}"
       case "${key}" in
-        DOMAIN_BASE|DOMAIN_CHAT|DOMAIN_AI|DOMAIN_LIBRARY|DOMAIN_MAPS|DOMAIN_MEDIA|DOMAIN_FILES|DOMAIN_STREAM|DOMAIN_HERMES)
+        DOMAIN_BASE|DOMAIN_CHAT|DOMAIN_AI|DOMAIN_LIBRARY|DOMAIN_MAPS|DOMAIN_MEDIA|DOMAIN_FILES|DOMAIN_STREAM|DOMAIN_HERMES|DOMAIN_SEARCH)
           if [[ -z "${!key:-}" ]]; then
             printf -v "${key}" '%s' "${val}"
             export "${key?}"
@@ -87,6 +87,7 @@ domain_derive() {
   DOMAIN_FILES="${DOMAIN_FILES:-files.${DOMAIN_BASE}}"
   DOMAIN_STREAM="${DOMAIN_STREAM:-stream.${DOMAIN_BASE}}"
   DOMAIN_HERMES="${DOMAIN_HERMES:-hermes.${DOMAIN_BASE}}"
+  DOMAIN_SEARCH="${DOMAIN_SEARCH:-search.${DOMAIN_BASE}}"
   # Always re-derive secondary names from base so a single DOMAIN_BASE change wins
   DOMAIN_CHAT="chat.${DOMAIN_BASE}"
   DOMAIN_AI="ai.${DOMAIN_BASE}"
@@ -114,7 +115,7 @@ domain_for() {
     files|nextcloud) printf '%s' "${DOMAIN_FILES}" ;;
     stream|peertube) printf '%s' "${DOMAIN_STREAM}" ;;
     hermes|agent) printf '%s' "${DOMAIN_HERMES}" ;;
-    search|searxng) printf '%s' "${DOMAIN_SEARCH}" ;;
+    search|searx|searxng) printf '%s' "${DOMAIN_SEARCH}" ;;
     *) printf '%s.%s' "${1}" "${DOMAIN_BASE}" ;;
   esac
 }

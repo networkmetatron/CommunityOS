@@ -10,7 +10,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 # Deploy package files into /opt/communityos
-mkdir -p "${TARGET}"/{lib,bin,scripts,static/welcome,runtime,backups,secrets}
+mkdir -p "${TARGET}"/{lib,bin,scripts,static/welcome,runtime,backups}
 # Placeholder DNS config file so Docker never creates this path as a directory
 if [[ -d "${TARGET}/runtime/dnsmasq.conf" ]]; then
   rm -rf "${TARGET}/runtime/dnsmasq.conf"
@@ -26,26 +26,24 @@ DNSPLACEHOLDER
 fi
 if [[ "${PKG_DIR}" != "${TARGET}" ]]; then
   for item in compose.yaml Caddyfile config.json VERSION PRINCIPLES.md README.md CHANGELOG.md \
-              bin lib scripts static apps data secrets; do
+              bin lib scripts static apps data config docs secrets; do
     if [[ -e "${PKG_DIR}/${item}" ]]; then
       cp -a "${PKG_DIR}/${item}" "${TARGET}/"
     fi
   done
 fi
+# Ensure local Caddy template exists even if config/ was missing from an older tree
+mkdir -p "${TARGET}/config" "${TARGET}/secrets"
+if [[ ! -f "${TARGET}/config/Caddyfile.local.template" && -f "${TARGET}/Caddyfile" ]]; then
+  cp -a "${TARGET}/Caddyfile" "${TARGET}/config/Caddyfile.local.template"
+fi
+if [[ ! -f "${TARGET}/secrets/acme.env.example" && -f "${PKG_DIR}/secrets/acme.env.example" ]]; then
+  cp -a "${PKG_DIR}/secrets/acme.env.example" "${TARGET}/secrets/acme.env.example"
+fi
 install -m 755 "${TARGET}/bin/communityos" /usr/local/bin/communityos
 
 BASE_DIR="${TARGET}"
 cd "${BASE_DIR}"
-
-# TLS runtime helpers
-# shellcheck source=/dev/null
-if [[ -f "${BASE_DIR}/lib/tls.sh" ]]; then
-  source "${BASE_DIR}/lib/tls.sh"
-else
-  echo "[FAIL] lib/tls.sh is missing from the CommunityOS installation."
-  exit 1
-fi
-
 
 # ---------------------------------------------------------------------------
 # Offline mode (air-gapped install from a local bundle)
@@ -690,6 +688,7 @@ fi
 systemctl restart docker >/dev/null 2>&1 || true
 sleep 2
 
+DOMAIN_SEARCH="${DOMAIN_SEARCH:-search.${DOMAIN_BASE}}"
 # Write .env
 # Quote values so "My Community" etc. are safe to source
 _q() { printf '%s' "$1" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/"; }
@@ -704,6 +703,7 @@ DOMAIN_MEDIA=$(_q "${DOMAIN_MEDIA}")
 DOMAIN_FILES=$(_q "${DOMAIN_FILES}")
 DOMAIN_STREAM=$(_q "${DOMAIN_STREAM}")
 DOMAIN_HERMES=$(_q "${DOMAIN_HERMES}")
+DOMAIN_SEARCH=$(_q "${DOMAIN_SEARCH}")
 SERVICE_WEBSITE=$(_q "${SERVICE_WEBSITE:-true}")
 SERVICE_CHAT=$(_q "${SERVICE_CHAT:-true}")
 SERVICE_AI=$(_q "${SERVICE_AI:-true}")
@@ -732,6 +732,125 @@ chmod 640 "${BASE_DIR}/.env"
 # Allow the installing user to use the CLI without sudo after re-login
 if getent group docker >/dev/null 2>&1; then
   chgrp docker "${BASE_DIR}/.env" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
+# TLS mode: generate Caddyfile + secrets BEFORE first compose up
+# ---------------------------------------------------------------------------
+# shellcheck source=/dev/null
+[[ -f "${BASE_DIR}/lib/tls.sh" ]] && source "${BASE_DIR}/lib/tls.sh" 2>/dev/null || true
+export COMMUNITYOS_ROOT="${BASE_DIR}"
+export TLS_MODE="${TLS_MODE:-local}"
+export DOMAIN_BASE="${DOMAIN_BASE}"
+export ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+
+mkdir -p "${BASE_DIR}/secrets"
+# Compose always mounts secrets/acme.env — create a root-only placeholder if absent
+if [[ ! -f "${BASE_DIR}/secrets/acme.env" ]]; then
+  : > "${BASE_DIR}/secrets/acme.env"
+fi
+chmod 600 "${BASE_DIR}/secrets/acme.env" 2>/dev/null || true
+chown root:root "${BASE_DIR}/secrets/acme.env" 2>/dev/null || true
+
+if [[ "${TLS_MODE}" == "acme_dns01" ]]; then
+  echo
+  echo "Public certificate mode (Let's Encrypt / Cloudflare DNS-01)"
+  echo "-----------------------------------------------------------"
+  echo "  Cloudflare must be authoritative for ${DOMAIN_BASE}."
+  echo "  API token: Zone → DNS → Edit (this zone only)."
+  echo "  Registrar may stay elsewhere; DNS-only (grey cloud) is fine."
+  echo "  No public inbound 80/443 required; clients need no ca.crt."
+  echo
+
+  _acme_email="${ADMIN_EMAIL:-admin@${DOMAIN_BASE}}"
+  _tok=""
+  # Prefer any pre-existing non-empty values (reinstall / pre-seeded secrets)
+  if [[ -s "${BASE_DIR}/secrets/acme.env" ]]; then
+    _e="$(grep -E '^ACME_EMAIL=' "${BASE_DIR}/secrets/acme.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+    _t="$(grep -E '^CLOUDFLARE_API_TOKEN=' "${BASE_DIR}/secrets/acme.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+    [[ -n "${_e}" ]] && _acme_email="${_e}"
+    [[ -n "${_t}" ]] && _tok="${_t}"
+  fi
+
+  if [[ -t 0 ]]; then
+    read -rp "ACME email [${_acme_email}]: " _email_in || true
+    if [[ -n "${_email_in:-}" ]]; then
+      _acme_email="${_email_in}"
+    fi
+    if [[ -z "${_tok}" ]]; then
+      for _try in 1 2 3; do
+        # Do not echo the token back in later messages
+        read -rsp "Cloudflare API token (Zone DNS Edit): " _tok_in || true
+        echo
+        if [[ -n "${_tok_in:-}" ]]; then
+          _tok="${_tok_in}"
+          unset _tok_in
+          break
+        fi
+        echo "  Token is required for automatic Let's Encrypt issuance."
+      done
+    else
+      echo "Using existing Cloudflare API token from secrets/acme.env (not displayed)."
+    fi
+  fi
+
+  # Write a clean secrets file (never leave an empty 0-byte file in public mode)
+  umask 077
+  cat > "${BASE_DIR}/secrets/acme.env" <<ACMEENV
+# CommunityOS ACME DNS-01 — root-only; never commit
+ACME_EMAIL=${_acme_email}
+ACME_DNS_PROVIDER=cloudflare
+CLOUDFLARE_API_TOKEN=${_tok}
+ACME_WILDCARD=1
+ACMEENV
+  chmod 600 "${BASE_DIR}/secrets/acme.env"
+  chown root:root "${BASE_DIR}/secrets/acme.env"
+  unset _tok_in 2>/dev/null || true
+
+  if [[ -z "${_tok}" ]]; then
+    echo
+    echo "[WARN] CLOUDFLARE_API_TOKEN is empty — public certificates cannot be issued yet."
+    if [[ -t 0 ]]; then
+      read -rp "Continue install without issuing certificates now? [y/N]: " _cont || true
+      case "${_cont:-N}" in
+        y|Y|yes|YES) ;;
+        *)
+          echo "Fill ${BASE_DIR}/secrets/acme.env and re-run: sudo ./install.sh"
+          exit 1
+          ;;
+      esac
+    fi
+    echo "  After install, set the token in secrets/acme.env then:"
+    echo "    sudo communityos tls set acme_dns01"
+    echo "    sudo communityos tls prewarm"
+    echo
+  else
+    echo "[ OK ] ACME secrets written to ${BASE_DIR}/secrets/acme.env (mode 600)"
+  fi
+  unset _tok
+fi
+
+# Generate the correct Caddyfile for TLS_MODE BEFORE first Caddy start
+if declare -F tls_prepare_caddy_runtime >/dev/null 2>&1; then
+  tls_prepare_caddy_runtime
+elif declare -F tls_apply_caddyfile >/dev/null 2>&1; then
+  tls_apply_caddyfile
+fi
+# Ensure CADDY_IMAGE is in .env for compose (plugin image for ACME)
+if declare -F tls_sync_caddy_image_env >/dev/null 2>&1; then
+  tls_sync_caddy_image_env
+fi
+if [[ "${TLS_MODE}" == "acme_dns01" ]]; then
+  if grep -q 'tls internal' "${BASE_DIR}/Caddyfile" 2>/dev/null || grep -q 'local_certs' "${BASE_DIR}/Caddyfile" 2>/dev/null; then
+    echo "[FAIL] Caddyfile still contains local CA directives after TLS prepare — aborting"
+    echo "       Check ${BASE_DIR}/lib/tls.sh and ${BASE_DIR}/config/Caddyfile.local.template"
+    exit 1
+  fi
+  if ! grep -q 'cert_issuer acme' "${BASE_DIR}/Caddyfile" 2>/dev/null; then
+    echo "[FAIL] Caddyfile missing ACME cert_issuer after TLS prepare — aborting"
+    exit 1
+  fi
+  echo "[ OK ] Caddyfile configured for Let's Encrypt ACME DNS-01"
 fi
 
 # Element config
@@ -794,22 +913,6 @@ if [[ ! -f "${_dns_conf}" ]]; then
   exit 1
 fi
 
-# Prepare the runtime Caddyfile BEFORE the first Compose startup.
-# Public ACME mode must never start with the local-CA template.
-if ! tls_prepare_caddy_runtime; then
-  echo "[FAIL] Could not prepare the Caddy TLS configuration."
-  exit 1
-fi
-
-if [[ "$(tls_mode_get)" == "acme_dns01" ]]; then
-  if grep -qE '^[[:space:]]*local_certs[[:space:]]*$|^[[:space:]]*tls internal([[:space:]]|$)'       "${BASE_DIR}/Caddyfile" 2>/dev/null; then
-    echo "[FAIL] Public ACME mode selected, but generated Caddyfile still contains local TLS directives."
-    echo "       Refusing to start Caddy with the wrong certificate mode."
-    exit 1
-  fi
-  echo "[ OK ] Caddyfile configured for Let's Encrypt ACME DNS-01"
-fi
-
 echo "Starting CommunityOS (this may take several minutes)..."
 
 if [[ "${COMMUNITYOS_OFFLINE}" == "1" ]]; then
@@ -824,14 +927,38 @@ else
   docker compose -f "${BASE_DIR}/compose.yaml" --env-file "${BASE_DIR}/.env" up -d --scale dns=0 "${COMPOSE_PULL_FLAG[@]}"
 fi
 
-# Wait for Caddy CA
-echo "Finishing setup..."
-for i in $(seq 1 36); do
-  if docker exec communityos-caddy test -f /data/caddy/pki/authorities/local/root.crt 2>/dev/null; then
-    break
+# Public ACME: ensure Caddy process loaded the generated Caddyfile (not a stale local-CA process)
+if [[ "${TLS_MODE:-local}" == "acme_dns01" ]]; then
+  if declare -F tls_reload_caddy >/dev/null 2>&1; then
+    tls_reload_caddy || true
+  else
+    docker compose -f "${BASE_DIR}/compose.yaml" --env-file "${BASE_DIR}/.env" up -d --no-deps --force-recreate caddy 2>/dev/null \
+      || docker restart communityos-caddy 2>/dev/null || true
   fi
-  sleep 5
-done
+fi
+
+# Wait for gateway readiness (local CA file or public leaf)
+echo "Finishing setup..."
+if [[ "${TLS_MODE:-local}" == "acme_dns01" ]]; then
+  # Public mode: trigger issuance and wait for Let's Encrypt leaf
+  if declare -F tls_prewarm >/dev/null 2>&1; then
+    echo "Requesting Let's Encrypt certificate (DNS-01)..."
+    TLS_PREWARM_QUIET=0 tls_prewarm || true
+  else
+    for i in $(seq 1 24); do
+      _iss="$(echo | openssl s_client -connect "${DOMAIN_BASE}:443" -servername "${DOMAIN_BASE}" 2>/dev/null         | openssl x509 -noout -issuer 2>/dev/null || true)"
+      echo "${_iss}" | grep -qiE "Let's Encrypt|ISRG" && break
+      sleep 5
+    done
+  fi
+else
+  for i in $(seq 1 36); do
+    if docker exec communityos-caddy test -f /data/caddy/pki/authorities/local/root.crt 2>/dev/null; then
+      break
+    fi
+    sleep 5
+  done
+fi
 
 INVOKER="${SUDO_USER:-}"
 if [[ -n "${INVOKER}" ]] && id "${INVOKER}" >/dev/null 2>&1; then

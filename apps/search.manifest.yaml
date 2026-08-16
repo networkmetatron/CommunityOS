@@ -1,6 +1,6 @@
 id: search
 name: Search
-description: Privacy-oriented community metasearch powered by SearXNG
+description: Privacy-oriented metasearch (SearXNG) — aggregates external engines
 url: https://search.community.home.arpa
 domain: search.community.home.arpa
 compose: apps/search.yaml
