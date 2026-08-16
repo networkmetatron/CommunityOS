@@ -137,3 +137,8 @@ http://{$DOMAIN_BASE} {
 		header Content-Type text/html
 	}
 }
+
+{$DOMAIN_SEARCH} {
+        encode gzip
+        reverse_proxy searxng:8080
+}

@@ -111,6 +111,7 @@ tls_enabled_hosts() {
   [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/nextcloud.enabled" ]] && hosts+=("files.${base}")
   [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/peertube.enabled" ]] && hosts+=("stream.${base}")
   [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/hermes.enabled" ]] && hosts+=("hermes.${base}")
+  [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/search.enabled" ]] && hosts+=("search.${base}")
   if [[ "${#hosts[@]}" -eq 0 ]]; then
     hosts+=("${base}")
   fi

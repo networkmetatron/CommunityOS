@@ -96,8 +96,9 @@ domain_derive() {
   DOMAIN_FILES="files.${DOMAIN_BASE}"
   DOMAIN_STREAM="stream.${DOMAIN_BASE}"
   DOMAIN_HERMES="hermes.${DOMAIN_BASE}"
+  DOMAIN_SEARCH="search.${DOMAIN_BASE}"
   export DOMAIN_BASE DOMAIN_CHAT DOMAIN_AI
-  export DOMAIN_LIBRARY DOMAIN_MAPS DOMAIN_MEDIA DOMAIN_FILES DOMAIN_STREAM DOMAIN_HERMES
+  export DOMAIN_LIBRARY DOMAIN_MAPS DOMAIN_MEDIA DOMAIN_FILES DOMAIN_STREAM DOMAIN_HERMES DOMAIN_SEARCH
 }
 
 # Hostname for a known service key
@@ -113,6 +114,7 @@ domain_for() {
     files|nextcloud) printf '%s' "${DOMAIN_FILES}" ;;
     stream|peertube) printf '%s' "${DOMAIN_STREAM}" ;;
     hermes|agent) printf '%s' "${DOMAIN_HERMES}" ;;
+    search|searxng) printf '%s' "${DOMAIN_SEARCH}" ;;
     *) printf '%s.%s' "${1}" "${DOMAIN_BASE}" ;;
   esac
 }
@@ -121,7 +123,7 @@ domain_for() {
 domain_write_env() {
   local envf="${1:?}"
   domain_derive
-  local keys=(DOMAIN_BASE DOMAIN_CHAT DOMAIN_AI DOMAIN_LIBRARY DOMAIN_MAPS DOMAIN_MEDIA DOMAIN_FILES DOMAIN_STREAM DOMAIN_HERMES)
+  local keys=(DOMAIN_BASE DOMAIN_CHAT DOMAIN_AI DOMAIN_LIBRARY DOMAIN_MAPS DOMAIN_MEDIA DOMAIN_FILES DOMAIN_STREAM DOMAIN_HERMES DOMAIN_SEARCH)
   local k v
   touch "${envf}"
   for k in "${keys[@]}"; do
@@ -141,7 +143,7 @@ domain_dnsmasq_addresses() {
   local h
   for h in "${DOMAIN_BASE}" "${DOMAIN_CHAT}" "${DOMAIN_AI}" \
            "${DOMAIN_LIBRARY}" "${DOMAIN_MAPS}" "${DOMAIN_MEDIA}" \
-           "${DOMAIN_FILES}" "${DOMAIN_STREAM}" "${DOMAIN_HERMES}"; do
+           "${DOMAIN_FILES}" "${DOMAIN_STREAM}" "${DOMAIN_HERMES}" "${DOMAIN_SEARCH}"; do
     echo "address=/${h}/${ip}"
   done
 }

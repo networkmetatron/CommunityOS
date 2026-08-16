@@ -1,0 +1,18 @@
+# CommunityOS optional app: SearXNG
+services:
+  searxng:
+    image: ghcr.io/searxng/searxng:2026.7.28-c01178d03
+    container_name: communityos-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: https://${DOMAIN_SEARCH:-search.${DOMAIN_BASE:-community.home.arpa}}/
+      SEARXNG_SECRET: ${SEARXNG_SECRET}
+      UWSGI_WORKERS: "4"
+      UWSGI_THREADS: "4"
+    volumes:
+      - searxng_config:/etc/searxng
+      - searxng_cache:/var/cache/searxng
+
+volumes:
+  searxng_config:
+  searxng_cache:

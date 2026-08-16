@@ -12,7 +12,7 @@ app_list_ids() {
   if [[ -f "${REGISTRY}" ]] && command -v python3 >/dev/null 2>&1; then
     python3 -c "import json; print('\\n'.join(json.load(open('${REGISTRY}'))))" 2>/dev/null && return
   fi
-  printf '%s\n' kiwix maps jellyfin nextcloud peertube
+  printf '%s\n' kiwix maps jellyfin nextcloud peertube hermes search
 }
 
 app_is_enabled() {
@@ -106,6 +106,11 @@ print(app.get('${field}','') or '')
     hermes:url) echo "https://$(domain_for hermes)" ;;
     hermes:domain) echo "$(domain_for hermes)" ;;
     hermes:container) echo "communityos-hermes" ;;
+    search:name) echo "Search" ;;
+    search:description) echo "Privacy-oriented community metasearch powered by SearXNG" ;;
+    search:url) echo "https://$(domain_for search)" ;;
+    search:domain) echo "$(domain_for search)" ;;
+    search:container) echo "communityos-searxng" ;;
     *:data) echo "${COMMUNITYOS_ROOT}/data/${id}" ;;
     *:compose) echo "apps/${id}.yaml" ;;
     *) echo "" ;;
@@ -120,6 +125,7 @@ app_aliases_resolve() {
     files) echo nextcloud ;;
     streaming|stream) echo peertube ;;
     agent|hermes-agent) echo hermes ;;
+    search|searx|searxng) echo search ;;
     *) echo "$1" ;;
   esac
 }
@@ -232,6 +238,7 @@ app_update_dns() {
   DOMAIN_FILES="${DOMAIN_FILES:-files.${DOMAIN_BASE}}"
   DOMAIN_STREAM="${DOMAIN_STREAM:-stream.${DOMAIN_BASE}}"
   DOMAIN_HERMES="${DOMAIN_HERMES:-hermes.${DOMAIN_BASE}}"
+  DOMAIN_SEARCH="${DOMAIN_SEARCH:-search.${DOMAIN_BASE}}"
 
   mkdir -p "${COMMUNITYOS_ROOT}/runtime"
 
@@ -281,6 +288,9 @@ app_update_dns() {
   fi
   if [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/hermes.enabled" ]]; then
     hosts+=("${DOMAIN_HERMES}")
+  fi
+  if [[ -f "${COMMUNITYOS_ROOT}/runtime/apps/search.enabled" ]]; then
+    hosts+=("${DOMAIN_SEARCH}")
   fi
   # Always include base if nothing selected yet (infra-only edge case)
   if [[ "${#hosts[@]}" -eq 0 && -n "${DOMAIN_BASE}" ]]; then

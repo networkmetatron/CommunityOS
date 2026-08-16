@@ -2598,7 +2598,7 @@ cmd_app() {
       local id raw="${1:-}"
       id="$(app_aliases_resolve "${raw}")"
       if [[ -z "${id}" ]] || [[ -z "$(app_meta "${id}" name)" ]]; then
-        echo "Usage: communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+        echo "Usage: communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
         exit 1
       fi
       repair_env_quotes
@@ -2624,6 +2624,23 @@ cmd_app() {
         load_env
         # Postgres role/database bootstrap runs later, after postgres is started
         # and healthy (see peertube case after app_enable).
+      fi
+
+      # SearXNG secret must exist before any Compose interpolation.
+      if [[ "${id}" == "search" ]]; then
+        load_env 2>/dev/null || true
+        if [[ -z "${SEARXNG_SECRET:-}" ]]; then
+          local _searx_secret
+          _searx_secret="$(openssl rand -hex 32)"
+          if grep -q '^SEARXNG_SECRET=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+            sed -i "s|^SEARXNG_SECRET=.*$|SEARXNG_SECRET=${_searx_secret}|" "${COMMUNITYOS_ROOT}/.env"
+          else
+            echo "SEARXNG_SECRET=${_searx_secret}" >> "${COMMUNITYOS_ROOT}/.env"
+          fi
+          chgrp docker "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+          chmod 640 "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+          load_env
+        fi
       fi
 
       # Maps: deploy overlay + pmtiles BEFORE compose starts maps-api
@@ -3151,7 +3168,8 @@ HERMESENV
         nextcloud) docker restart communityos-nextcloud 2>/dev/null || compose up -d nextcloud ;;
         peertube) docker restart communityos-peertube communityos-peertube-redis 2>/dev/null || compose up -d peertube peertube-redis ;;
         hermes) docker restart communityos-hermes 2>/dev/null || compose up -d hermes ;;
-        *) echo "Usage: communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"; exit 1 ;;
+        search) docker restart communityos-searxng 2>/dev/null || compose up -d searxng ;;
+        *) echo "Usage: communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"; exit 1 ;;
       esac
       log_ok "App restarted."
       ;;
@@ -3161,9 +3179,9 @@ HERMESENV
     *)
       echo "Usage:"
       echo "  communityos apps"
-      echo "  communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
-      echo "  communityos app remove  <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
-      echo "  communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+      echo "  communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
+      echo "  communityos app remove  <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
+      echo "  communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
       exit 1
       ;;
   esac

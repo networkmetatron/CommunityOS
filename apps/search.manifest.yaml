@@ -1,0 +1,11 @@
+id: search
+name: Search
+description: Privacy-oriented community metasearch powered by SearXNG
+url: https://search.community.home.arpa
+domain: search.community.home.arpa
+compose: apps/search.yaml
+container: communityos-searxng
+data: /opt/communityos/data/search
+requires:
+  - caddy
+redistribute_offline: false

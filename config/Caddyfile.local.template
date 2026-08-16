@@ -137,3 +137,16 @@ http://{$DOMAIN_BASE} {
 		header Content-Type text/html
 	}
 }
+
+{$DOMAIN_SEARCH} {
+        encode gzip
+        tls internal
+        handle {
+                reverse_proxy searxng:8080
+        }
+        handle_errors {
+                rewrite * /search.html
+                root * /srv/apps-missing
+                file_server
+        }
+}
