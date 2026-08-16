@@ -2878,6 +2878,23 @@ HERMESENV
         :
       fi
 
+      # SearXNG secret must exist before any Compose interpolation.
+      if [[ "${id}" == "search" ]]; then
+        load_env 2>/dev/null || true
+        if [[ -z "${SEARXNG_SECRET:-}" ]]; then
+          local _searx_secret
+          _searx_secret="$(openssl rand -hex 32)"
+          if grep -q '^SEARXNG_SECRET=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+            sed -i "s|^SEARXNG_SECRET=.*$|SEARXNG_SECRET=${_searx_secret}|" "${COMMUNITYOS_ROOT}/.env"
+          else
+            echo "SEARXNG_SECRET=${_searx_secret}" >> "${COMMUNITYOS_ROOT}/.env"
+          fi
+          chgrp docker "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+          chmod 640 "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+          load_env
+        fi
+      fi
+
       app_enable "${id}"
       # Only clear enabled flag if install does not reach explicit success.
       # Healthy Nextcloud must not lose nextcloud.enabled because of a later non-fatal check.
@@ -3257,6 +3274,7 @@ HERMESENV
         nextcloud) docker restart communityos-nextcloud 2>/dev/null || compose up -d nextcloud ;;
         peertube) docker restart communityos-peertube communityos-peertube-redis 2>/dev/null || compose up -d peertube peertube-redis ;;
         hermes) docker restart communityos-hermes 2>/dev/null || compose up -d hermes ;;
+        search) docker restart communityos-searxng 2>/dev/null || compose up -d searxng ;;
         *) echo "Usage: communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"; exit 1 ;;
       esac
       log_ok "App restarted."

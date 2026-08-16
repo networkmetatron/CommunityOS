@@ -1,5 +1,12 @@
 ## Unreleased
 
+### CommunityOS 1.1.10
+- Generate persistent `SEARXNG_SECRET` before Compose interpolation during Search installation.
+- Add `communityos app restart search` lifecycle support.
+- Validated Search installation with a 64-character persistent SearXNG secret.
+- Validated Search HTTPS endpoint with HTTP 200 on a fresh Debian 13 installation.
+
+
 ### CommunityOS 1.1.9
 - `tls_reload_caddy`: force-recreate/restart Caddy after TLS Caddyfile changes (no manual docker restart)
 - `communityos tls set` and ACME install path call reload before prewarm
