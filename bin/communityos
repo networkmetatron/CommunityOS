@@ -2732,6 +2732,41 @@ cmd_app() {
         # and healthy (see peertube case after app_enable).
       fi
 
+      # Search: SEARXNG_SECRET must exist before Compose interpolates apps/search.yaml
+      if [[ "${id}" == "search" ]]; then
+        mkdir -p "${COMMUNITYOS_ROOT}/data/search"
+        load_env 2>/dev/null || true
+        local _ss="${SEARXNG_SECRET:-}"
+        if [[ -z "${_ss}" ]]; then
+          if grep -qE '^SEARXNG_SECRET=.+' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+            _ss="$(grep -E '^SEARXNG_SECRET=' "${COMMUNITYOS_ROOT}/.env" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+          fi
+        fi
+        if [[ -z "${_ss}" ]]; then
+          _ss="$(openssl rand -hex 32)"
+          if grep -q '^SEARXNG_SECRET=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+            sed -i "s|^SEARXNG_SECRET=.*|SEARXNG_SECRET=${_ss}|" "${COMMUNITYOS_ROOT}/.env"
+          else
+            echo "SEARXNG_SECRET=${_ss}" >> "${COMMUNITYOS_ROOT}/.env"
+          fi
+          chgrp docker "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+          chmod 640 "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
+          log_ok "Generated SEARXNG_SECRET (64 hex chars) in .env"
+        else
+          # Ensure non-empty value is written (preserve existing)
+          if ! grep -qE '^SEARXNG_SECRET=.+' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+            if grep -q '^SEARXNG_SECRET=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
+              sed -i "s|^SEARXNG_SECRET=.*|SEARXNG_SECRET=${_ss}|" "${COMMUNITYOS_ROOT}/.env"
+            else
+              echo "SEARXNG_SECRET=${_ss}" >> "${COMMUNITYOS_ROOT}/.env"
+            fi
+          fi
+          log_ok "Using existing SEARXNG_SECRET from .env"
+        fi
+        export SEARXNG_SECRET="${_ss}"
+        load_env
+      fi
+
       # Maps: deploy overlay + pmtiles BEFORE compose starts maps-api
       if [[ "${id}" == "maps" ]]; then
         # Refresh package files when CLI is run from a release extract tree
@@ -2876,23 +2911,6 @@ HERMESENV
         # Ollama is started after app_enable under the hermes profile (shared
         # with AI, without requiring Open WebUI). Model check runs then.
         :
-      fi
-
-      # SearXNG secret must exist before any Compose interpolation.
-      if [[ "${id}" == "search" ]]; then
-        load_env 2>/dev/null || true
-        if [[ -z "${SEARXNG_SECRET:-}" ]]; then
-          local _searx_secret
-          _searx_secret="$(openssl rand -hex 32)"
-          if grep -q '^SEARXNG_SECRET=' "${COMMUNITYOS_ROOT}/.env" 2>/dev/null; then
-            sed -i "s|^SEARXNG_SECRET=.*$|SEARXNG_SECRET=${_searx_secret}|" "${COMMUNITYOS_ROOT}/.env"
-          else
-            echo "SEARXNG_SECRET=${_searx_secret}" >> "${COMMUNITYOS_ROOT}/.env"
-          fi
-          chgrp docker "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
-          chmod 640 "${COMMUNITYOS_ROOT}/.env" 2>/dev/null || true
-          load_env
-        fi
       fi
 
       app_enable "${id}"
@@ -3135,8 +3153,143 @@ HERMESENV
         log_ok "PeerTube is ready"
       fi
   if [[ "${id}" == "jellyfin" ]]; then
-        sleep 5
-        docker start communityos-jellyfin-init >/dev/null 2>&1 || true
+        load_env 2>/dev/null || true
+        local _admin="${ADMIN_USER:-admin}"
+        local _pass="${ADMIN_PASS:-}"
+        if [[ -z "${_pass}" ]]; then
+          log_fail "ADMIN_PASS is empty — cannot provision Jellyfin administrator"
+          exit 1
+        fi
+        log_info "Provisioning Jellyfin administrator (${_admin})..."
+        compose up -d --no-deps jellyfin 2>/dev/null || true
+        # Wait for public API
+        local _w=0
+        while [[ "${_w}" -lt 60 ]]; do
+          _w=$((_w + 1))
+          if docker exec communityos-jellyfin curl -fsS http://127.0.0.1:8096/System/Info/Public >/dev/null 2>&1; then
+            break
+          fi
+          sleep 2
+        done
+
+        _jf_users_public() {
+          docker exec communityos-jellyfin curl -fsS http://127.0.0.1:8096/Users/Public 2>/dev/null || echo "[]"
+        }
+        _jf_admin_listed() {
+          _jf_users_public | grep -q "\"Name\":\"${_admin}\""
+        }
+        _jf_wizard_open() {
+          local c
+          c="$(docker exec communityos-jellyfin curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8096/Startup/Configuration 2>/dev/null || echo 000)"
+          [[ "${c}" == "200" ]]
+        }
+
+        # Recovery: empty users + wizard closed — stop JF, reopen wizard on disk, start JF
+        if ! _jf_admin_listed; then
+          if ! _jf_wizard_open; then
+            log_info "Jellyfin has no users and wizard is closed — recovering (stop → reopen wizard → start)"
+            docker stop communityos-jellyfin >/dev/null 2>&1 || true
+            # Edit system.xml on the named volume while container is stopped
+            docker run --rm -v communityos_jellyfin_config:/config alpine:3.20 \
+              sh -c 'if [ -f /config/config/system.xml ]; then
+                       sed -i "s|<IsStartupWizardCompleted>true</IsStartupWizardCompleted>|<IsStartupWizardCompleted>false</IsStartupWizardCompleted>|" /config/config/system.xml
+                     fi' 2>/dev/null || true
+            docker start communityos-jellyfin >/dev/null 2>&1 || compose up -d --no-deps jellyfin 2>/dev/null || true
+            _w=0
+            while [[ "${_w}" -lt 60 ]]; do
+              _w=$((_w + 1))
+              if docker exec communityos-jellyfin curl -fsS http://127.0.0.1:8096/System/Info/Public >/dev/null 2>&1; then
+                break
+              fi
+              sleep 2
+            done
+            # Wait for wizard API
+            _w=0
+            while [[ "${_w}" -lt 45 ]]; do
+              _w=$((_w + 1))
+              if _jf_wizard_open; then
+                break
+              fi
+              sleep 2
+            done
+          fi
+        fi
+
+        _run_jellyfin_init() {
+          docker rm -f communityos-jellyfin-init >/dev/null 2>&1 || true
+          compose up -d --no-deps jellyfin-init 2>/dev/null || true
+          local _ji=0 _jrc=1
+          while [[ "${_ji}" -lt 120 ]]; do
+            _ji=$((_ji + 1))
+            if ! docker inspect communityos-jellyfin-init >/dev/null 2>&1; then
+              sleep 1
+              continue
+            fi
+            local _jst
+            _jst="$(docker inspect -f '{{.State.Status}}' communityos-jellyfin-init 2>/dev/null || echo missing)"
+            if [[ "${_jst}" == "exited" ]]; then
+              _jrc="$(docker inspect -f '{{.State.ExitCode}}' communityos-jellyfin-init 2>/dev/null || echo 1)"
+              break
+            fi
+            sleep 2
+          done
+          return "${_jrc}"
+        }
+
+        _jf_auth_ok() {
+          local c
+          c="$(docker exec communityos-jellyfin curl -s -o /dev/null -w '%{http_code}' \
+            -X POST http://127.0.0.1:8096/Users/AuthenticateByName \
+            -H 'Content-Type: application/json' \
+            -H 'X-Emby-Authorization: MediaBrowser Client="CommunityOS", Device="install", DeviceId="communityos", Version="1.0.0"' \
+            -d "{\"Username\":\"${_admin}\",\"Pw\":\"${_pass}\"}" 2>/dev/null || echo 000)"
+          [[ "${c}" == "200" ]]
+        }
+        if _jf_auth_ok; then
+          log_ok "Jellyfin admin already present: ${_admin}"
+        else
+          if ! _run_jellyfin_init; then
+            log_warn "Jellyfin init failed — recovery restart and one retry..."
+            docker stop communityos-jellyfin >/dev/null 2>&1 || true
+            docker run --rm -v communityos_jellyfin_config:/config alpine:3.20 \
+              sh -c 'if [ -f /config/config/system.xml ]; then
+                       sed -i "s|<IsStartupWizardCompleted>true</IsStartupWizardCompleted>|<IsStartupWizardCompleted>false</IsStartupWizardCompleted>|" /config/config/system.xml
+                     fi' 2>/dev/null || true
+            docker start communityos-jellyfin >/dev/null 2>&1 || compose up -d --no-deps jellyfin 2>/dev/null || true
+            sleep 10
+            if ! _run_jellyfin_init; then
+              log_fail "Could not create Jellyfin administrator."
+              echo "  jellyfin-init logs:"
+              docker logs communityos-jellyfin-init --tail 50 2>&1 || true
+              echo "  jellyfin logs:"
+              docker logs communityos-jellyfin --tail 40 2>&1 || true
+              exit 1
+            fi
+          fi
+        fi
+
+        # Final verification: AuthenticateByName only
+        # (IsHidden admins do not appear in GET /Users/Public)
+        local _ok=0 _k=0 _ac=000
+        while [[ "${_k}" -lt 15 ]]; do
+          _k=$((_k + 1))
+          _ac="$(docker exec communityos-jellyfin curl -s -o /dev/null -w '%{http_code}' \
+            -X POST http://127.0.0.1:8096/Users/AuthenticateByName \
+            -H 'Content-Type: application/json' \
+            -H 'X-Emby-Authorization: MediaBrowser Client="CommunityOS", Device="install", DeviceId="communityos", Version="1.0.0"' \
+            -d "{\"Username\":\"${_admin}\",\"Pw\":\"${_pass}\"}" 2>/dev/null || echo 000)"
+          if [[ "${_ac}" == "200" ]]; then
+            _ok=1
+            break
+          fi
+          sleep 2
+        done
+        if [[ "${_ok}" -ne 1 ]]; then
+          log_fail "Jellyfin admin provisioning did not complete — AuthenticateByName as '${_admin}' failed (HTTP ${_ac})"
+          docker logs communityos-jellyfin-init --tail 50 2>&1 || true
+          exit 1
+        fi
+        log_ok "Jellyfin admin created: ${_admin}"
       fi
       if [[ "${id}" == "hermes" ]]; then
         # Ensure hermes service from overlay is up (API server must be configured, not just gateway)
@@ -3287,8 +3440,8 @@ HERMESENV
       echo "  communityos apps"
       echo "  communityos app install <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
       echo "  communityos service enable <website|chat|ai>   # core services"
-      echo "  communityos app remove  <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
-      echo "  communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes>"
+      echo "  communityos app remove  <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
+      echo "  communityos app restart <kiwix|maps|jellyfin|nextcloud|peertube|hermes|search>"
       exit 1
       ;;
   esac

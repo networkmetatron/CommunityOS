@@ -1,11 +1,15 @@
 ## Unreleased
 
-### CommunityOS 1.1.10
-- Generate persistent `SEARXNG_SECRET` before Compose interpolation during Search installation.
-- Add `communityos app restart search` lifecycle support.
-- Validated Search installation with a 64-character persistent SearXNG secret.
-- Validated Search HTTPS endpoint with HTTP 200 on a fresh Debian 13 installation.
+### CommunityOS 1.1.11
+- Restore SEARXNG_SECRET bootstrap before Compose; remove SEARCH_SECRET / changeme fallback
+- Restore `communityos app restart search`
+- Jellyfin: host recovery stop→reopen wizard→start; GET/POST Startup/User; verify Users/Public + AuthenticateByName
+- Jellyfin first-admin provisioning: GET /Startup/User before POST (placeholder user)
+- Fail-closed jellyfin-init (no `|| true` on critical steps); verify via GET /Users/Public
+- Recover empty-users + wizard-complete by reopening wizard; host retries after Jellyfin restart
+- Media install fails if administrator is not verified
 
+## Unreleased
 
 ### CommunityOS 1.1.9
 - `tls_reload_caddy`: force-recreate/restart Caddy after TLS Caddyfile changes (no manual docker restart)
